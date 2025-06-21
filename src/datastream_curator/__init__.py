@@ -9,6 +9,16 @@ from .config import CurationConfig, LLMConfig, LoggingConfig, OutputConfig, Proc
 from .core import DataStreamCurator
 from .diff import DiffEngine, DiffOperation, DiffResult
 from .llm import DiffRequest, LLMClient, LLMResponse
+from .enhanced_diff import EnhancedDiffEngine
+from .models import (
+    DiffStyleOperation,
+    DiffOperationType,
+    StructuredDiff,
+    ChunkBasedDiff,
+    DiffConfig,
+    ChunkStrategy,
+    PatchResult
+)
 
 __version__ = "0.1.0"
 __author__ = "DataStream Curator Team"
@@ -25,16 +35,26 @@ __all__ = [
     "ProcessingConfig",
     "OutputConfig",
     "LoggingConfig",
+    "DiffConfig",
     
     # LLM integration
     "LLMClient",
     "DiffRequest",
     "LLMResponse",
     
-    # Diff engine
+    # Legacy diff engine
     "DiffEngine",
     "DiffOperation",
     "DiffResult",
+    
+    # Enhanced diff engine
+    "EnhancedDiffEngine",
+    "DiffStyleOperation",
+    "DiffOperationType",
+    "StructuredDiff",
+    "ChunkBasedDiff",
+    "ChunkStrategy",
+    "PatchResult",
 ]
 
 
@@ -43,12 +63,13 @@ def get_version() -> str:
     return __version__
 
 
-def create_curator(config_path: str = None, **kwargs) -> DataStreamCurator:
+def create_curator(config_path: str = None, use_enhanced_diff: bool = True, **kwargs) -> DataStreamCurator:
     """
     Create a DataStreamCurator instance with optional configuration.
     
     Args:
         config_path: Path to configuration YAML file
+        use_enhanced_diff: Whether to use the enhanced diff engine
         **kwargs: Additional configuration parameters
         
     Returns:
@@ -79,4 +100,4 @@ def create_curator(config_path: str = None, **kwargs) -> DataStreamCurator:
         
         config = CurationConfig(**config_dict)
     
-    return DataStreamCurator(config)
+    return DataStreamCurator(config, use_enhanced_diff=use_enhanced_diff)

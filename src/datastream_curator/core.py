@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, Union
 from .config import CurationConfig
 from .diff import DiffEngine
 from .llm import DiffRequest, LLMClient
+from .enhanced_diff import EnhancedDiffEngine
+from .models import DiffConfig, ChunkStrategy, StructuredDiff
 
 logger = logging.getLogger(__name__)
 
@@ -16,10 +18,33 @@ logger = logging.getLogger(__name__)
 class DataStreamCurator:
     """Main class for incremental data curation and knowledge base management."""
     
-    def __init__(self, config: Optional[CurationConfig] = None):
+    def __init__(self, config: Optional[CurationConfig] = None, use_enhanced_diff: bool = True):
         """Initialize the curator with configuration."""
         self.config = config or CurationConfig.from_env()
-        self.diff_engine = DiffEngine()
+        self.use_enhanced_diff = use_enhanced_diff
+        
+        # Initialize diff engines
+        self.diff_engine = DiffEngine()  # Legacy engine for backward compatibility
+        
+        if use_enhanced_diff:
+            try:
+                # Create enhanced diff config from curation config
+                diff_config = DiffConfig(
+                    chunk_strategy=ChunkStrategy(self.config.diff_chunk_strategy),
+                    chunk_size=self.config.diff_chunk_size,
+                    chunk_overlap=self.config.diff_chunk_overlap,
+                    use_semantic_chunking=self.config.diff_use_semantic,
+                    preserve_structure=self.config.diff_preserve_structure,
+                    min_operation_confidence=self.config.diff_min_confidence
+                )
+                self.enhanced_diff_engine = EnhancedDiffEngine(diff_config)
+                logger.info("Enhanced diff engine initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize enhanced diff engine: {e}. Using legacy engine.")
+                self.enhanced_diff_engine = None
+                self.use_enhanced_diff = False
+        else:
+            self.enhanced_diff_engine = None
         
         # Set up logging based on configuration
         logging.basicConfig(
@@ -77,7 +102,33 @@ class DataStreamCurator:
             
             # Apply diff to existing content
             logger.info("Applying diff to knowledge base")
-            updated_content = self.diff_engine.apply_diff(existing_content, diff_data)
+            
+            if self.enhanced_diff_engine and self.use_enhanced_diff:
+                try:
+                    # Try enhanced diff application
+                    logger.info("Using enhanced diff engine")
+                    
+                    # Check if we got a structured diff from instructor
+                    if isinstance(diff_data, dict) and 'added' in diff_data:
+                        # Convert to StructuredDiff if needed
+                        structured_diff = StructuredDiff(**diff_data)
+                        patch_result = self.enhanced_diff_engine.apply_structured_diff(existing_content, structured_diff)
+                        updated_content = patch_result.content
+                        
+                        # Log results
+                        if patch_result.errors:
+                            logger.warning(f"Enhanced diff had {len(patch_result.errors)} errors: {patch_result.errors}")
+                        logger.info(f"Enhanced diff applied {patch_result.stats['applied_count']} operations")
+                    else:
+                        # Fallback to legacy format processing
+                        updated_content = self.diff_engine.apply_diff(existing_content, diff_data)
+                        
+                except Exception as e:
+                    logger.warning(f"Enhanced diff failed: {e}. Falling back to legacy diff engine.")
+                    updated_content = self.diff_engine.apply_diff(existing_content, diff_data)
+            else:
+                # Use legacy diff engine
+                updated_content = self.diff_engine.apply_diff(existing_content, diff_data)
             
             # Save updated content if output path specified
             if output_path:

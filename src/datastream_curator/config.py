@@ -49,6 +49,14 @@ class CurationConfig(BaseModel):
     output: OutputConfig = OutputConfig()
     logging: LoggingConfig = LoggingConfig()
     
+    # Diff configuration will be added by enhanced_diff module
+    diff_chunk_strategy: str = "recursive"
+    diff_chunk_size: int = 1000
+    diff_chunk_overlap: int = 100
+    diff_use_semantic: bool = True
+    diff_preserve_structure: bool = True
+    diff_min_confidence: float = 0.7
+    
     @classmethod
     def from_file(cls, config_path: str) -> "CurationConfig":
         """Load configuration from YAML file."""
@@ -98,7 +106,13 @@ class CurationConfig(BaseModel):
             logging=LoggingConfig(
                 level=os.getenv("LOG_LEVEL", "INFO"),
                 format=os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-            )
+            ),
+            diff_chunk_strategy=os.getenv("DIFF_CHUNK_STRATEGY", "recursive"),
+            diff_chunk_size=int(os.getenv("DIFF_CHUNK_SIZE", "1000")),
+            diff_chunk_overlap=int(os.getenv("DIFF_CHUNK_OVERLAP", "100")),
+            diff_use_semantic=os.getenv("DIFF_USE_SEMANTIC", "true").lower() == "true",
+            diff_preserve_structure=os.getenv("DIFF_PRESERVE_STRUCTURE", "true").lower() == "true",
+            diff_min_confidence=float(os.getenv("DIFF_MIN_CONFIDENCE", "0.7"))
         )
     
     @staticmethod

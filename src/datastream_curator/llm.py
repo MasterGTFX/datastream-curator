@@ -6,9 +6,12 @@ import logging
 from typing import Any, Dict, Optional
 
 import aiohttp
+import instructor
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from .config import LLMConfig
+from .models import StructuredDiff, ChunkBasedDiff, DiffConfig
 
 logger = logging.getLogger(__name__)
 
@@ -32,26 +35,47 @@ class DiffRequest(BaseModel):
 
 
 class LLMClient:
-    """Async client for LLM API interactions."""
+    """Async client for LLM API interactions with instructor support."""
     
     def __init__(self, config: LLMConfig):
         self.config = config
         self.session: Optional[aiohttp.ClientSession] = None
+        self.instructor_client: Optional[instructor.AsyncInstructor] = None
     
     async def __aenter__(self):
         """Async context manager entry."""
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=self.config.timeout)
         )
+        
+        # Setup instructor client for structured outputs
+        if self.config.provider in ["openai", "openrouter"]:
+            base_url = "https://api.openai.com/v1" if self.config.provider == "openai" else "https://openrouter.ai/api/v1"
+            openai_client = AsyncOpenAI(
+                api_key=self.config.api_key,
+                base_url=base_url
+            )
+            self.instructor_client = instructor.from_openai(openai_client)
+        
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Async context manager exit."""
         if self.session:
             await self.session.close()
+        if self.instructor_client and hasattr(self.instructor_client, 'close'):
+            await self.instructor_client.close()
     
     async def generate_diff(self, request: DiffRequest) -> Dict[str, Any]:
         """Generate structured diff using LLM."""
+        # Try instructor-based structured generation first
+        if self.instructor_client:
+            try:
+                return await self._generate_structured_diff(request)
+            except Exception as e:
+                logger.warning(f"Structured diff generation failed: {e}. Falling back to manual parsing.")
+        
+        # Fallback to original implementation
         prompt = self._build_diff_prompt(request)
         
         for attempt in range(self.config.retry_attempts):
@@ -233,6 +257,83 @@ Respond with ONLY the JSON structure, no additional text."""
         except Exception as e:
             logger.error(f"Error parsing LLM response: {e}")
             raise ValueError(f"Failed to parse LLM response: {e}")
+    
+    async def _generate_structured_diff(self, request: DiffRequest) -> Dict[str, Any]:
+        """Generate structured diff using instructor for guaranteed structure."""
+        prompt = self._build_structured_diff_prompt(request)
+        
+        for attempt in range(self.config.retry_attempts):
+            try:
+                response = await self.instructor_client.chat.completions.create(
+                    model=self.config.model,
+                    response_model=StructuredDiff,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a knowledge base curator that generates precise diff operations."
+                        },
+                        {
+                            "role": "user", 
+                            "content": prompt
+                        }
+                    ],
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens
+                )
+                
+                # Convert to legacy format for compatibility
+                return {
+                    "additions": [{
+                        "section": op.section,
+                        "content": op.content,
+                        "reasoning": op.reasoning
+                    } for op in response.added],
+                    "modifications": [{
+                        "section": op.section,
+                        "old_content": op.old_content,
+                        "new_content": op.content,
+                        "reasoning": op.reasoning
+                    } for op in response.changed],
+                    "deletions": [{
+                        "section": op.section,
+                        "content": op.old_content or op.content,
+                        "reasoning": op.reasoning
+                    } for op in response.removed],
+                    "reasoning": response.reasoning
+                }
+                
+            except Exception as e:
+                logger.warning(f"Structured diff attempt {attempt + 1} failed: {e}")
+                if attempt == self.config.retry_attempts - 1:
+                    raise
+                await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
+    
+    def _build_structured_diff_prompt(self, request: DiffRequest) -> str:
+        """Build prompt optimized for structured diff generation."""
+        return f"""Analyze the existing knowledge base and new input data to generate precise diff operations.
+
+EXISTING KNOWLEDGE BASE:
+{request.existing_content or "No existing content"}
+
+NEW INPUT DATA:
+{request.new_data}
+
+USER INSTRUCTION:
+{request.instruction or "Intelligently integrate new information into the knowledge base"}
+
+CONTEXT:
+{request.context or "No additional context"}
+
+Generate precise diff operations following these guidelines:
+1. Use 'added' for completely new content
+2. Use 'changed' for modifications to existing content (provide both old and new)
+3. Use 'removed' for content that should be deleted
+4. Include line numbers and character positions when possible
+5. Provide clear reasoning for each operation
+6. Preserve important existing content
+7. Maintain document structure and coherence
+
+Focus on accuracy and only make necessary changes."""
     
     def _validate_operations(self, diff_data: Dict[str, Any]) -> None:
         """Validate the structure of diff operations."""

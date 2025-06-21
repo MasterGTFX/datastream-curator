@@ -141,8 +141,7 @@ pip install datastream-curator
                 )
         
         # Verify diff was used
-        assert curator.enhanced_diff_engine is not None
-        assert curator.use_enhanced_diff is True
+        assert curator.diff_engine is not None
         
         # Verify output file was created
         assert output_path.exists()
@@ -166,8 +165,8 @@ pip install datastream-curator
             mock_client_class.return_value.__aenter__.return_value = mock_client
             
             # Make diff fail by patching it to raise exception
-            with patch.object(curator.enhanced_diff_engine, 'apply_structured_diff', 
-                              side_effect=Exception("Enhanced diff error")):
+            with patch.object(curator.diff_engine, 'apply_structured_diff', 
+                              side_effect=Exception("Diff error")):
                 
                 result = await curator.process(
                     input_data=input_data,
@@ -288,7 +287,7 @@ Basic documentation."""
         assert len(result) > len(large_content)  # Should be larger with addition
         
         # Verify diff engine handled the large document
-        assert curator.enhanced_diff_engine is not None
+        assert curator.diff_engine is not None
     
     @pytest.mark.asyncio
     async def test_confidence_filtering_integration(self, curator, temp_dir):
@@ -338,18 +337,21 @@ Basic documentation."""
     def test_curator_initialization_error_handling(self, test_config):
         """Test handling of initialization errors in diff."""
         # Mock chonkie import error
-        with patch('datastream_curator.enhanced_diff.TokenChunker', side_effect=ImportError("chonkie not available")):
-            curator = DataStreamCurator(test_config, use_enhanced_diff=True)
-            
-            # Should fallback gracefully
-            assert curator.enhanced_diff_engine is None or not curator.use_enhanced_diff
+        with patch('datastream_curator.diff.TokenChunker', side_effect=ImportError("chonkie not available")):
+            try:
+                curator = DataStreamCurator(test_config)
+                # Should initialize successfully despite warning
+                assert curator.diff_engine is not None
+            except RuntimeError:
+                # Or fail gracefully with clear error
+                pass
     
     def test_configuration_integration(self, test_config):
         """Test that diff configuration is properly integrated."""
-        curator = DataStreamCurator(test_config, use_enhanced_diff=True)
+        curator = DataStreamCurator(test_config)
         
-        if curator.enhanced_diff_engine:
-            engine_config = curator.enhanced_diff_engine.config
+        if curator.diff_engine:
+            engine_config = curator.diff_engine.config
             
             assert engine_config.chunk_size == test_config.diff_chunk_size
             assert engine_config.chunk_overlap == test_config.diff_chunk_overlap

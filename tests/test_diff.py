@@ -112,7 +112,7 @@ This concludes the updated test document.
         assert 'Test Document' in section_titles
         assert 'Introduction' in section_titles
     
-    @patch('chonkie.RecursiveChunker')
+    @patch('datastream_curator.diff.RecursiveChunker')
     def test_chunking_with_mocked_chunker(self, mock_chunker_class, diff_engine):
         """Test chunking with mocked chunker."""
         # Setup mock
@@ -360,7 +360,7 @@ Existing content B."""
     def test_different_chunk_strategies(self, chunk_strategy):
         """Test different chunking strategies."""
         config = DiffConfig(chunk_strategy=chunk_strategy)
-        engine = EnhancedDiffEngine(config)
+        engine = DiffEngine(config)
         
         assert engine.config.chunk_strategy == chunk_strategy
         assert chunk_strategy in engine.chunkers or chunk_strategy == ChunkStrategy.SEMANTIC

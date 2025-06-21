@@ -12,7 +12,6 @@ from datastream_curator import DataStreamCurator, CurationConfig, create_curator
 class TestFullWorkflow:
     """Test complete end-to-end workflows."""
     
-    @pytest.mark.asyncio
     async def test_complete_workflow_new_kb(self, test_config, mock_llm_response, temp_dir, sample_json_data):
         """Test complete workflow creating new knowledge base."""
         with patch('datastream_curator.core.LLMClient') as mock_client_class:
@@ -58,7 +57,6 @@ class TestFullWorkflow:
             file_content = output_file.read_text()
             assert file_content == result
     
-    @pytest.mark.asyncio
     async def test_complete_workflow_update_existing(self, test_config, existing_kb_file, temp_dir, sample_json_data):
         """Test complete workflow updating existing knowledge base."""
         with patch('datastream_curator.core.LLMClient') as mock_client_class:
@@ -110,7 +108,6 @@ class TestFullWorkflow:
             assert "Batch Processing" in result     # New content added
             assert ">=0.1.0" in result             # Modified content
     
-    @pytest.mark.asyncio
     async def test_incremental_updates_workflow(self, test_config, temp_dir):
         """Test multiple incremental updates to same knowledge base."""
         with patch('datastream_curator.core.LLMClient') as mock_client_class:
@@ -202,7 +199,6 @@ class TestFullWorkflow:
             final_content = kb_path.read_text()
             assert final_content == result3
     
-    @pytest.mark.asyncio
     async def test_batch_processing_workflow(self, test_config, temp_dir):
         """Test batch processing workflow."""
         with patch('datastream_curator.core.LLMClient') as mock_client_class:
@@ -251,32 +247,23 @@ class TestFullWorkflow:
             # Should have called LLM for each file
             assert mock_client.generate_diff.call_count == len(input_files)
     
-    @pytest.mark.asyncio
     async def test_error_recovery_workflow(self, test_config, temp_dir):
         """Test workflow with error recovery."""
-        with patch('datastream_curator.core.LLMClient') as mock_client_class:
-            mock_client = mock_client_class.return_value.__aenter__.return_value
-            
+        from datastream_curator.llm import LLMResponse
+        with patch('datastream_curator.llm.LLMClient._make_request') as mock_request:
             # First call fails, second succeeds
-            mock_client.generate_diff.side_effect = [
+            mock_request.side_effect = [
                 Exception("Temporary API error"),
-                {
-                    "additions": [
-                        {
-                            "section": "Content",
-                            "content": "Successfully processed after retry",
-                            "reasoning": "Recovered from error"
-                        }
-                    ],
-                    "modifications": [],
-                    "deletions": [],
-                    "reasoning": "Success after retry"
-                }
+                LLMResponse(
+                    content='{"additions": [{"section": "Content", "content": "Successfully processed after retry", "reasoning": "Recovered from error"}], "modifications": [], "deletions": [], "reasoning": "Success after retry"}',
+                    model="test-model",
+                    finish_reason="stop"
+                )
             ]
             
             # Set low retry attempts for testing
-            test_config.llm.retry_attempts = 2
-            test_config.llm.retry_delay = 0.1
+            test_config.processing.retry_attempts = 2
+            test_config.processing.retry_delay = 0.1
             
             curator = DataStreamCurator(test_config)
             
@@ -294,6 +281,9 @@ class TestFullWorkflow:
             # Should succeed after retry
             assert "Successfully processed after retry" in result
             assert output_file.exists()
+            
+            # Should have made two calls to _make_request (one failure, one success)
+            assert mock_request.call_count == 2
     
     def test_create_curator_helper_function(self, config_file, mock_env_vars):
         """Test the create_curator helper function."""
@@ -311,7 +301,6 @@ class TestFullWorkflow:
         curator3 = create_curator(config_path=config_file, **{"llm.temperature": 0.5})
         assert curator3.config.llm.temperature == 0.5
     
-    @pytest.mark.asyncio
     async def test_configuration_validation_workflow(self, temp_dir):
         """Test workflow with configuration validation."""
         # Test invalid configuration
@@ -330,7 +319,6 @@ class TestFullWorkflow:
                 instruction="test"
             )
     
-    @pytest.mark.asyncio
     async def test_llm_connection_test_workflow(self, test_config):
         """Test LLM connection testing workflow."""
         with patch('datastream_curator.core.LLMClient') as mock_client_class:
@@ -356,7 +344,6 @@ class TestFullWorkflow:
             
             assert isinstance(result, str)
     
-    @pytest.mark.asyncio
     async def test_different_file_formats_workflow(self, test_config, temp_dir):
         """Test workflow with different input file formats."""
         with patch('datastream_curator.core.LLMClient') as mock_client_class:

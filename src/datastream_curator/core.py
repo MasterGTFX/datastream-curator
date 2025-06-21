@@ -81,7 +81,11 @@ class DataStreamCurator:
             logger.info(f"Processed input data ({len(processed_data)} chars)")
             
             # Generate diff using LLM
-            async with LLMClient(self.config.llm) as llm_client:
+            async with LLMClient(
+                self.config.llm, 
+                retry_attempts=self.config.processing.retry_attempts,
+                retry_delay=self.config.processing.retry_delay
+            ) as llm_client:
                 diff_request = DiffRequest(
                     existing_content=existing_content,
                     new_data=processed_data,

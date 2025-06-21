@@ -37,8 +37,10 @@ class DiffRequest(BaseModel):
 class LLMClient:
     """Async client for LLM API interactions with instructor support."""
     
-    def __init__(self, config: LLMConfig):
+    def __init__(self, config: LLMConfig, retry_attempts: int = 3, retry_delay: float = 1.0):
         self.config = config
+        self.retry_attempts = retry_attempts
+        self.retry_delay = retry_delay
         self.session: Optional[aiohttp.ClientSession] = None
         self.instructor_client: Optional[instructor.AsyncInstructor] = None
     
@@ -78,7 +80,7 @@ class LLMClient:
         # Fallback to original implementation
         prompt = self._build_diff_prompt(request)
         
-        for attempt in range(self.config.retry_attempts):
+        for attempt in range(self.retry_attempts):
             try:
                 response = await self._make_request(prompt)
                 diff_data = self._parse_diff_response(response.content)
@@ -86,10 +88,10 @@ class LLMClient:
                 return diff_data
             except Exception as e:
                 logger.warning(f"LLM request attempt {attempt + 1} failed: {e}")
-                if attempt == self.config.retry_attempts - 1:
+                if attempt == self.retry_attempts - 1:
                     logger.error("All LLM request attempts failed")
                     raise
-                await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
+                await asyncio.sleep(self.retry_delay * (2 ** attempt))
     
     def _build_diff_prompt(self, request: DiffRequest) -> str:
         """Build structured prompt for diff generation."""
@@ -262,7 +264,7 @@ Respond with ONLY the JSON structure, no additional text."""
         """Generate structured diff using instructor for guaranteed structure."""
         prompt = self._build_structured_diff_prompt(request)
         
-        for attempt in range(self.config.retry_attempts):
+        for attempt in range(self.retry_attempts):
             try:
                 response = await self.instructor_client.chat.completions.create(
                     model=self.config.model,
@@ -304,9 +306,9 @@ Respond with ONLY the JSON structure, no additional text."""
                 
             except Exception as e:
                 logger.warning(f"Structured diff attempt {attempt + 1} failed: {e}")
-                if attempt == self.config.retry_attempts - 1:
+                if attempt == self.retry_attempts - 1:
                     raise
-                await asyncio.sleep(self.config.retry_delay * (2 ** attempt))
+                await asyncio.sleep(self.retry_delay * (2 ** attempt))
     
     def _build_structured_diff_prompt(self, request: DiffRequest) -> str:
         """Build prompt optimized for structured diff generation."""

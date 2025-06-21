@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from .config import LLMConfig
-from .models import StructuredDiff, ChunkBasedDiff, DiffConfig
+from .models import SimpleDiff, DiffOperation, DiffConfig
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,8 @@ class LLMClient:
                 api_key=self.config.api_key,
                 base_url=base_url
             )
-            self.instructor_client = instructor.from_openai(openai_client)
+            self.instructor_client = instructor.from_openai(openai_client,
+                                                            mode=instructor.Mode.JSON)
         
         return self
     
@@ -68,82 +69,42 @@ class LLMClient:
         if self.instructor_client and hasattr(self.instructor_client, 'close'):
             await self.instructor_client.close()
     
-    async def generate_diff(self, request: DiffRequest) -> Dict[str, Any]:
+    async def generate_diff(self, request: DiffRequest) -> SimpleDiff:
         """Generate structured diff using LLM."""
-        # Try instructor-based structured generation first
-        if self.instructor_client:
-            try:
-                return await self._generate_structured_diff(request)
-            except Exception as e:
-                logger.warning(f"Structured diff generation failed: {e}. Falling back to manual parsing.")
+        if not self.instructor_client:
+            raise ValueError("Instructor client required for SimpleDiff generation")
         
-        # Fallback to original implementation
-        prompt = self._build_diff_prompt(request)
+        prompt = self._build_structured_diff_prompt(request)
         
         for attempt in range(self.retry_attempts):
             try:
-                response = await self._make_request(prompt)
-                diff_data = self._parse_diff_response(response.content)
-                logger.info(f"Successfully generated diff on attempt {attempt + 1}")
-                return diff_data
+                response = await self.instructor_client.chat.completions.create(
+                    model=self.config.model,
+                    response_model=SimpleDiff,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a knowledge base curator that generates precise diff operations."
+                        },
+                        {
+                            "role": "user", 
+                            "content": prompt
+                        }
+                    ],
+                    temperature=self.config.temperature,
+                    max_tokens=self.config.max_tokens
+                )
+                
+                logger.info(f"Successfully generated SimpleDiff on attempt {attempt + 1}")
+                return response
+                
             except Exception as e:
-                logger.warning(f"LLM request attempt {attempt + 1} failed: {e}")
+                logger.warning(f"SimpleDiff generation attempt {attempt + 1} failed: {e}")
                 if attempt == self.retry_attempts - 1:
-                    logger.error("All LLM request attempts failed")
+                    logger.error("All SimpleDiff generation attempts failed")
                     raise
                 await asyncio.sleep(self.retry_delay * (2 ** attempt))
     
-    def _build_diff_prompt(self, request: DiffRequest) -> str:
-        """Build structured prompt for diff generation."""
-        return f"""You are a knowledge base curator. Analyze the existing knowledge base and new input data to generate structured updates.
-
-EXISTING KNOWLEDGE BASE:
-{request.existing_content or "No existing content"}
-
-NEW INPUT DATA:
-{request.new_data}
-
-USER INSTRUCTION:
-{request.instruction or "Intelligently integrate new information into the knowledge base"}
-
-CONTEXT:
-{request.context or "No additional context"}
-
-Generate a JSON response with this exact structure:
-{{
-  "additions": [
-    {{
-      "section": "section_name",
-      "content": "new content to add",
-      "reasoning": "why this should be added"
-    }}
-  ],
-  "modifications": [
-    {{
-      "section": "section_name", 
-      "old_content": "exact text to replace",
-      "new_content": "replacement text",
-      "reasoning": "why this change is needed"
-    }}
-  ],
-  "deletions": [
-    {{
-      "section": "section_name",
-      "content": "exact text to remove",
-      "reasoning": "why this should be removed"
-    }}
-  ],
-  "reasoning": "Overall reasoning for all changes"
-}}
-
-Focus on:
-1. Accuracy and factual correctness
-2. Maintaining consistency and coherence  
-3. Preserving important historical context
-4. Following the user's specific curation goals
-5. Only make necessary changes - preserve existing valuable content
-
-Respond with ONLY the JSON structure, no additional text."""
 
     async def _make_request(self, prompt: str) -> LLMResponse:
         """Make request to LLM API."""
@@ -218,144 +179,80 @@ Respond with ONLY the JSON structure, no additional text."""
                 finish_reason=result["choices"][0]["finish_reason"]
             )
     
-    def _parse_diff_response(self, content: str) -> Dict[str, Any]:
-        """Parse and validate LLM diff response."""
-        try:
-            # Extract JSON from response (handle cases where LLM adds extra text)
-            content = content.strip()
-            
-            # Find JSON boundaries
-            start = content.find('{')
-            end = content.rfind('}') + 1
-            
-            if start == -1 or end == 0:
-                raise ValueError("No JSON found in response")
-            
-            json_str = content[start:end]
-            diff_data = json.loads(json_str)
-            
-            # Validate and ensure required structure
-            required_keys = ["additions", "modifications", "deletions", "reasoning"]
-            for key in required_keys:
-                if key not in diff_data:
-                    if key == "reasoning":
-                        diff_data[key] = "No specific reasoning provided"
-                    else:
-                        diff_data[key] = []
-            
-            # Validate structure of operations
-            self._validate_operations(diff_data)
-            
-            logger.debug(f"Successfully parsed diff with {len(diff_data['additions'])} additions, "
-                        f"{len(diff_data['modifications'])} modifications, "
-                        f"{len(diff_data['deletions'])} deletions")
-            
-            return diff_data
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse LLM response as JSON: {e}")
-            logger.error(f"Response content: {content}")
-            raise ValueError(f"Invalid JSON response from LLM: {e}")
-        except Exception as e:
-            logger.error(f"Error parsing LLM response: {e}")
-            raise ValueError(f"Failed to parse LLM response: {e}")
     
-    async def _generate_structured_diff(self, request: DiffRequest) -> Dict[str, Any]:
-        """Generate structured diff using instructor for guaranteed structure."""
-        prompt = self._build_structured_diff_prompt(request)
-        
-        for attempt in range(self.retry_attempts):
-            try:
-                response = await self.instructor_client.chat.completions.create(
-                    model=self.config.model,
-                    response_model=StructuredDiff,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a knowledge base curator that generates precise diff operations."
-                        },
-                        {
-                            "role": "user", 
-                            "content": prompt
-                        }
-                    ],
-                    temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens
-                )
-                
-                # Convert to legacy format for compatibility
-                return {
-                    "additions": [{
-                        "section": op.section,
-                        "content": op.content,
-                        "reasoning": op.reasoning
-                    } for op in response.added],
-                    "modifications": [{
-                        "section": op.section,
-                        "old_content": op.old_content,
-                        "new_content": op.content,
-                        "reasoning": op.reasoning
-                    } for op in response.changed],
-                    "deletions": [{
-                        "section": op.section,
-                        "content": op.old_content or op.content,
-                        "reasoning": op.reasoning
-                    } for op in response.removed],
-                    "reasoning": response.reasoning
-                }
-                
-            except Exception as e:
-                logger.warning(f"Structured diff attempt {attempt + 1} failed: {e}")
-                if attempt == self.retry_attempts - 1:
-                    raise
-                await asyncio.sleep(self.retry_delay * (2 ** attempt))
     
     def _build_structured_diff_prompt(self, request: DiffRequest) -> str:
-        """Build prompt optimized for structured diff generation."""
+        """Build prompt optimized for SimpleDiff generation."""
         return f"""Analyze the existing knowledge base and new input data to generate precise diff operations.
 
 EXISTING KNOWLEDGE BASE:
+<existing_content>
 {request.existing_content or "No existing content"}
+</existing_content>
 
 NEW INPUT DATA:
+<new_data>
 {request.new_data}
+</new_data>
 
 USER INSTRUCTION:
+<instruction>
 {request.instruction or "Intelligently integrate new information into the knowledge base"}
+</instruction>
 
 CONTEXT:
+<context>
 {request.context or "No additional context"}
+</context>
 
-Generate precise diff operations following these guidelines:
-1. Use 'added' for completely new content
-2. Use 'changed' for modifications to existing content (provide both old and new)
-3. Use 'removed' for content that should be deleted
-4. Include line numbers and character positions when possible
-5. Provide clear reasoning for each operation
-6. Preserve important existing content
-7. Maintain document structure and coherence
+You must respond with a JSON object containing diff operations. The structure must be:
 
-Focus on accuracy and only make necessary changes."""
+{{
+  "reasoning": "Overall explanation for all changes",
+  "operations": [
+    {{
+      "reasoning": "Why this specific operation is needed",
+      "search": "Text to find (or insertion point for additions)",
+      "replace": "Content to replace with"
+    }}
+  ]
+}}
+
+OPERATION TYPES & EXAMPLES:
+
+1. TO ADD CONTENT AT END:
+{{
+  "reasoning": "Add new section",
+  "search": "",
+  "replace": "## New Section\\nNew content here."
+}}
+
+2. TO ADD CONTENT AT SPECIFIC LOCATION:
+{{
+  "reasoning": "Insert after existing heading",
+  "search": "## Existing Section",
+  "replace": "## Existing Section\\n\\n## New Subsection\\nNew content here."
+}}
+
+3. TO REMOVE CONTENT:
+{{
+  "reasoning": "Remove outdated information",
+  "search": "Old content to remove completely.",
+  "replace": ""
+}}
+
+4. TO CHANGE EXISTING CONTENT:
+{{
+  "reasoning": "Update version number",
+  "search": "Version 1.0",
+  "replace": "Version 2.0"
+}}
+
+CRITICAL RULES:
+- Each operation must have exactly three fields: "reasoning", "search", "replace"
+- For removals: "replace" must be empty string ""
+- For additions at end: "search" must be empty string ""
+- For insertions: include the search text in the replace text to preserve it
+- Use exact string matching - be precise with whitespace and formatting
+- Focus on minimal, targeted changes only"""
     
-    def _validate_operations(self, diff_data: Dict[str, Any]) -> None:
-        """Validate the structure of diff operations."""
-        # Validate additions
-        for addition in diff_data.get("additions", []):
-            if not isinstance(addition, dict):
-                raise ValueError("Addition must be a dictionary")
-            if "content" not in addition:
-                raise ValueError("Addition must have 'content' field")
-        
-        # Validate modifications
-        for modification in diff_data.get("modifications", []):
-            if not isinstance(modification, dict):
-                raise ValueError("Modification must be a dictionary")
-            if "old_content" not in modification or "new_content" not in modification:
-                raise ValueError("Modification must have 'old_content' and 'new_content' fields")
-        
-        # Validate deletions
-        for deletion in diff_data.get("deletions", []):
-            if not isinstance(deletion, dict):
-                raise ValueError("Deletion must be a dictionary")
-            if "content" not in deletion:
-                raise ValueError("Deletion must have 'content' field")

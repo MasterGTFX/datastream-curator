@@ -9,12 +9,8 @@ from chonkie import TokenChunker, SentenceChunker, RecursiveChunker, SemanticChu
 from pydantic import BaseModel
 
 from .models import (
-    DiffStyleOperation, 
-    DiffOperationType, 
-    StructuredDiff, 
-    ChunkBasedDiff,
-    PatchableChunk,
-    ChunkMetadata,
+    SimpleDiff,
+    DiffOperation,
     DiffConfig,
     PatchResult,
     ContentChunk,
@@ -193,192 +189,66 @@ class DiffEngine:
         
         return chunks
     
-    def generate_precise_diff(self, old_content: str, new_content: str) -> List[DiffStyleOperation]:
-        """Generate precise diff operations using diff-match-patch."""
-        diffs = self.dmp.diff_main(old_content, new_content)
-        self.dmp.diff_cleanupSemantic(diffs)  # Clean up for better readability
-        
-        operations = []
-        char_position = 0
-        line_number = 1
-        
-        for operation, text in diffs:
-            if operation == dmp_module.diff_match_patch.DIFF_DELETE:
-                # Content removed
-                start_line = line_number
-                end_line = line_number + text.count('\n')
-                
-                operations.append(DiffStyleOperation(
-                    operation_type=DiffOperationType.REMOVED,
-                    content=text,
-                    old_content=text,
-                    line_start=start_line,
-                    line_end=end_line,
-                    char_start=char_position,
-                    char_end=char_position + len(text),
-                    reasoning="Content removed in diff",
-                    confidence=0.95
-                ))
-                
-                line_number += text.count('\n')
-                char_position += len(text)
-                
-            elif operation == dmp_module.diff_match_patch.DIFF_INSERT:
-                # Content added
-                start_line = line_number
-                end_line = line_number + text.count('\n')
-                
-                operations.append(DiffStyleOperation(
-                    operation_type=DiffOperationType.ADDED,
-                    content=text,
-                    line_start=start_line,
-                    line_end=end_line,
-                    char_start=char_position,
-                    char_end=char_position + len(text),
-                    reasoning="Content added in diff",
-                    confidence=0.95
-                ))
-                
-                line_number += text.count('\n')
-                char_position += len(text)
-                
-            elif operation == dmp_module.diff_match_patch.DIFF_EQUAL:
-                # Content unchanged
-                line_number += text.count('\n')
-                char_position += len(text)
-        
-        return operations
-    
-    def apply_structured_diff(self, content: str, structured_diff: StructuredDiff) -> PatchResult:
-        """Apply structured diff operations to content."""
+    def apply_simple_diff(self, content: str, simple_diff: SimpleDiff) -> PatchResult:
+        """Apply SimpleDiff operations to content."""
         result_content = content
-        applied_operations = []
-        skipped_operations = []
+        applied_changes = []
+        skipped_changes = []
         errors = []
         
-        # Sort operations by position (reverse order for deletions)
-        all_operations = structured_diff.added + structured_diff.changed + structured_diff.removed
-        
-        # Apply removals first (in reverse order to maintain positions)
-        removals = sorted(
-            [op for op in all_operations if op.operation_type == DiffOperationType.REMOVED],
-            key=lambda x: x.char_start or 0,
-            reverse=True
-        )
-        
-        for operation in removals:
+        # Apply all operations in order
+        for operation in simple_diff.operations:
             try:
-                result_content = self._apply_removal(result_content, operation)
-                applied_operations.append(operation)
+                if operation.replace == "":
+                    # This is a removal operation
+                    if operation.search in result_content:
+                        result_content = result_content.replace(operation.search, "", 1)
+                        applied_changes.append(f"Removed: {operation.reasoning}")
+                    else:
+                        skipped_changes.append(f"Could not find content to remove: {operation.search[:50]}...")
+                
+                elif operation.search == "":
+                    # This is an addition to end of document
+                    result_content += "\n\n" + operation.replace
+                    applied_changes.append(f"Added: {operation.reasoning}")
+                
+                elif operation.search in result_content:
+                    # This is either a change or insertion at a specific point
+                    if operation.search == operation.replace:
+                        # Skip no-op operations
+                        skipped_changes.append(f"No change needed: {operation.reasoning}")
+                    else:
+                        # Check if this looks like an insertion (search text appears in replace)
+                        if operation.search in operation.replace:
+                            # This is an insertion - replace search with search + new content
+                            result_content = result_content.replace(operation.search, operation.replace, 1)
+                            applied_changes.append(f"Added: {operation.reasoning}")
+                        else:
+                            # This is a change - replace search with replace
+                            result_content = result_content.replace(operation.search, operation.replace, 1)
+                            applied_changes.append(f"Changed: {operation.reasoning}")
+                else:
+                    skipped_changes.append(f"Could not find target content: {operation.search[:50]}...")
+                    
             except Exception as e:
-                errors.append(f"Failed to apply removal: {e}")
-                skipped_operations.append(operation)
-        
-        # Apply changes
-        changes = sorted(
-            [op for op in all_operations if op.operation_type == DiffOperationType.CHANGED],
-            key=lambda x: x.char_start or 0
-        )
-        
-        for operation in changes:
-            try:
-                result_content = self._apply_change(result_content, operation)
-                applied_operations.append(operation)
-            except Exception as e:
-                errors.append(f"Failed to apply change: {e}")
-                skipped_operations.append(operation)
-        
-        # Apply additions
-        additions = sorted(
-            [op for op in all_operations if op.operation_type == DiffOperationType.ADDED],
-            key=lambda x: x.char_start or 0
-        )
-        
-        for operation in additions:
-            try:
-                result_content = self._apply_addition(result_content, operation)
-                applied_operations.append(operation)
-            except Exception as e:
-                errors.append(f"Failed to apply addition: {e}")
-                skipped_operations.append(operation)
+                errors.append(f"Failed to apply operation: {e}")
+                skipped_changes.append(f"Operation failed: {operation.reasoning}")
         
         stats = {
-            "applied_count": len(applied_operations),
-            "skipped_count": len(skipped_operations),
+            "applied_count": len(applied_changes),
+            "skipped_count": len(skipped_changes),
             "error_count": len(errors),
-            "total_operations": len(all_operations)
+            "total_operations": len(simple_diff.operations)
         }
         
         return PatchResult(
             content=result_content,
-            applied_operations=applied_operations,
-            skipped_operations=skipped_operations,
+            applied_changes=applied_changes,
+            skipped_changes=skipped_changes,
             errors=errors,
             stats=stats
         )
     
-    def _apply_removal(self, content: str, operation: DiffStyleOperation) -> str:
-        """Apply a removal operation."""
-        if operation.char_start is not None and operation.char_end is not None:
-            # Validate character positions
-            if operation.char_start > len(content) or operation.char_end > len(content):
-                raise ValueError(f"Character positions out of bounds: {operation.char_start}-{operation.char_end} for content length {len(content)}")
-            if operation.char_start < 0 or operation.char_end < 0:
-                raise ValueError(f"Character positions cannot be negative: {operation.char_start}-{operation.char_end}")
-            if operation.char_start > operation.char_end:
-                raise ValueError(f"Start position cannot be greater than end position: {operation.char_start} > {operation.char_end}")
-            
-            # Use precise character positions
-            before = content[:operation.char_start]
-            after = content[operation.char_end:]
-            return before + after
-        elif operation.old_content:
-            # Use content matching
-            return content.replace(operation.old_content, "", 1)
-        else:
-            # Use the content field
-            return content.replace(operation.content, "", 1)
-    
-    def _apply_change(self, content: str, operation: DiffStyleOperation) -> str:
-        """Apply a change operation."""
-        if operation.char_start is not None and operation.char_end is not None:
-            # Validate character positions
-            if operation.char_start > len(content) or operation.char_end > len(content):
-                raise ValueError(f"Character positions out of bounds: {operation.char_start}-{operation.char_end} for content length {len(content)}")
-            if operation.char_start < 0 or operation.char_end < 0:
-                raise ValueError(f"Character positions cannot be negative: {operation.char_start}-{operation.char_end}")
-            if operation.char_start > operation.char_end:
-                raise ValueError(f"Start position cannot be greater than end position: {operation.char_start} > {operation.char_end}")
-            
-            # Use precise character positions
-            before = content[:operation.char_start]
-            after = content[operation.char_end:]
-            return before + operation.content + after
-        elif operation.old_content:
-            # Use content matching
-            return content.replace(operation.old_content, operation.content, 1)
-        else:
-            raise ValueError("Change operation missing old_content or position information")
-    
-    def _apply_addition(self, content: str, operation: DiffStyleOperation) -> str:
-        """Apply an addition operation."""
-        if operation.char_start is not None:
-            # Validate character position
-            if operation.char_start > len(content):
-                raise ValueError(f"Character position out of bounds: {operation.char_start} for content length {len(content)}")
-            if operation.char_start < 0:
-                raise ValueError(f"Character position cannot be negative: {operation.char_start}")
-            
-            # Insert at specific position
-            before = content[:operation.char_start]
-            after = content[operation.char_start:]
-            return before + operation.content + after
-        elif operation.section:
-            # Add to specific section
-            return self._add_to_section(content, operation.section, operation.content)
-        else:
-            # Append to end
-            return content + "\n\n" + operation.content
     
     def _create_line_based_chunks(self, content: str) -> List[ContentChunk]:
         """Create line-based chunks as fallback when chunkers fail."""
@@ -425,77 +295,4 @@ class DiffEngine:
         # Section not found, append to end
         return content + f"\n\n# {section}\n\n{new_content}"
     
-    def create_chunk_based_diff(self, old_content: str, new_content: str) -> ChunkBasedDiff:
-        """Create a chunk-based diff for large documents."""
-        # Analyze document structure
-        old_structure = self.analyze_document_structure(old_content)
-        new_structure = self.analyze_document_structure(new_content)
-        
-        chunks = []
-        global_operations = []
-        
-        # Process each chunk
-        for i, old_chunk in enumerate(old_structure.chunks):
-            # Find corresponding chunk in new content
-            if i < len(new_structure.chunks):
-                new_chunk = new_structure.chunks[i]
-                chunk_operations = self.generate_precise_diff(old_chunk.content, new_chunk.content)
-                
-                metadata = ChunkMetadata(
-                    chunk_id=f"chunk_{i}",
-                    chunk_index=i,
-                    start_char=old_chunk.start_index,
-                    end_char=old_chunk.end_index,
-                    token_count=len(old_chunk.content.split())
-                )
-                
-                chunks.append(PatchableChunk(
-                    content=old_chunk.content,
-                    metadata=metadata,
-                    operations=chunk_operations
-                ))
-        
-        return ChunkBasedDiff(
-            chunks=chunks,
-            global_operations=global_operations,
-            reasoning="Chunk-based diff analysis",
-            chunk_strategy=self.config.chunk_strategy,
-            total_chunks=len(chunks),
-            original_length=len(old_content)
-        )
     
-    def merge_operations(self, operations: List[DiffStyleOperation]) -> List[DiffStyleOperation]:
-        """Merge adjacent or overlapping operations for efficiency."""
-        if not operations:
-            return operations
-        
-        # Sort by position
-        sorted_ops = sorted(operations, key=lambda x: x.char_start or 0)
-        merged = []
-        current = sorted_ops[0]
-        
-        for next_op in sorted_ops[1:]:
-            # Check if operations can be merged
-            if (current.operation_type == next_op.operation_type and
-                current.char_end is not None and next_op.char_start is not None and
-                current.char_end >= next_op.char_start):
-                
-                # Merge operations
-                current = DiffStyleOperation(
-                    operation_type=current.operation_type,
-                    section=current.section,
-                    content=current.content + next_op.content,
-                    old_content=(current.old_content or "") + (next_op.old_content or ""),
-                    line_start=current.line_start,
-                    line_end=next_op.line_end,
-                    char_start=current.char_start,
-                    char_end=next_op.char_end,
-                    reasoning=f"{current.reasoning}; {next_op.reasoning}",
-                    confidence=min(current.confidence, next_op.confidence)
-                )
-            else:
-                merged.append(current)
-                current = next_op
-        
-        merged.append(current)
-        return merged

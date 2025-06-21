@@ -6,10 +6,12 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from markitdown import MarkItDown
+
 from .config import CurationConfig
 from .llm import DiffRequest, LLMClient
 from .diff import DiffEngine
-from .models import DiffConfig, ChunkStrategy, StructuredDiff
+from .models import DiffConfig, ChunkStrategy, SimpleDiff, DiffOperation
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +22,9 @@ class DataStreamCurator:
     def __init__(self, config: Optional[CurationConfig] = None):
         """Initialize the curator with configuration."""
         self.config = config or CurationConfig.from_env()
+        
+        # Initialize MarkItDown for input processing
+        self.markitdown = MarkItDown(enable_plugins=False)
         
         # Initialize enhanced diff engine
         try:
@@ -99,11 +104,9 @@ class DataStreamCurator:
             # Apply diff to existing content
             logger.info("Applying diff to knowledge base using diff engine")
             
-            # Check if we got a structured diff from instructor
-            if isinstance(diff_data, dict) and 'added' in diff_data:
-                # Convert to StructuredDiff if needed
-                structured_diff = StructuredDiff(**diff_data)
-                patch_result = self.diff_engine.apply_structured_diff(existing_content, structured_diff)
+            # Check if we got a SimpleDiff from instructor
+            if isinstance(diff_data, SimpleDiff):
+                patch_result = self.diff_engine.apply_simple_diff(existing_content, diff_data)
                 updated_content = patch_result.content
                 
                 # Log results
@@ -111,15 +114,9 @@ class DataStreamCurator:
                     logger.warning(f"Diff operation had {len(patch_result.errors)} errors: {patch_result.errors}")
                 logger.info(f"Applied {patch_result.stats['applied_count']} diff operations successfully")
             else:
-                # Legacy format - convert to structured format first
-                logger.warning("Received legacy diff format, converting to structured format")
-                try:
-                    structured_diff = self._convert_legacy_diff(diff_data)
-                    patch_result = self.diff_engine.apply_structured_diff(existing_content, structured_diff)
-                    updated_content = patch_result.content
-                except Exception as e:
-                    logger.error(f"Failed to convert legacy diff format: {e}")
-                    raise ValueError(f"Cannot process diff data: {e}")
+                # Unexpected format
+                logger.error(f"Unexpected diff format received: {type(diff_data)}")
+                raise ValueError(f"Cannot process diff data: expected SimpleDiff, got {type(diff_data)}")
             
             # Save updated content if output path specified
             if output_path:
@@ -219,7 +216,27 @@ class DataStreamCurator:
         return str(input_data)
     
     def _read_file(self, file_path: Path) -> str:
-        """Read and process different file formats."""
+        """Read and process different file formats using MarkItDown."""
+        try:
+            # Use MarkItDown to convert various formats to markdown
+            result = self.markitdown.convert(str(file_path))
+            
+            if result and result.text_content:
+                # Add file context header
+                content = f"# Content from {file_path.name}\n\n{result.text_content}"
+                logger.debug(f"Successfully processed {file_path} using MarkItDown")
+                return content
+            else:
+                logger.warning(f"MarkItDown returned empty content for {file_path}")
+                # Fallback to raw text reading
+                return self._read_file_fallback(file_path)
+                
+        except Exception as e:
+            logger.warning(f"MarkItDown failed for {file_path}: {e}, falling back to raw text")
+            return self._read_file_fallback(file_path)
+    
+    def _read_file_fallback(self, file_path: Path) -> str:
+        """Fallback method for reading files when MarkItDown fails."""
         try:
             content = file_path.read_text(encoding='utf-8')
         except UnicodeDecodeError:
@@ -233,33 +250,27 @@ class DataStreamCurator:
             # Pretty print JSON for better LLM processing
             try:
                 data = json.loads(content)
-                return json.dumps(data, indent=2, ensure_ascii=False)
+                return f"# JSON Content from {file_path.name}\n\n```json\n{json.dumps(data, indent=2, ensure_ascii=False)}\n```"
             except json.JSONDecodeError as e:
                 logger.warning(f"Invalid JSON in file {file_path}: {e}")
-                return content
+                return f"# Content from {file_path.name} (malformed JSON)\n\n{content}"
         
         elif suffix in ['.yaml', '.yml']:
-            # Add YAML indicator for LLM context
-            return f"# YAML Content from {file_path.name}\n\n{content}"
+            return f"# YAML Content from {file_path.name}\n\n```yaml\n{content}\n```"
         
         elif suffix == '.csv':
-            # Add CSV indicator for LLM context
-            return f"# CSV Content from {file_path.name}\n\n{content}"
+            return f"# CSV Content from {file_path.name}\n\n```csv\n{content}\n```"
         
         elif suffix == '.xml':
-            # Add XML indicator for LLM context
-            return f"<!-- XML Content from {file_path.name} -->\n\n{content}"
+            return f"# XML Content from {file_path.name}\n\n```xml\n{content}\n```"
         
         elif suffix in ['.md', '.markdown']:
-            # Add markdown indicator
-            return f"<!-- Markdown Content from {file_path.name} -->\n\n{content}"
+            return f"# Markdown Content from {file_path.name}\n\n{content}"
         
         elif suffix == '.txt':
-            # Add text indicator
             return f"# Text Content from {file_path.name}\n\n{content}"
         
         else:
-            # Unknown format, add generic indicator
             return f"# Content from {file_path.name} ({suffix} format)\n\n{content}"
     
     def validate_config(self) -> bool:
@@ -304,7 +315,7 @@ class DataStreamCurator:
                 
                 result = await llm_client.generate_diff(test_request)
                 
-                if result and isinstance(result, dict):
+                if result and isinstance(result, SimpleDiff):
                     logger.info("LLM connection test successful")
                     return True
                 else:
@@ -315,49 +326,3 @@ class DataStreamCurator:
             logger.error(f"LLM connection test failed: {e}")
             return False
     
-    def _convert_legacy_diff(self, diff_data: Dict[str, Any]) -> StructuredDiff:
-        """Convert legacy diff format to structured diff format."""
-        from .models import DiffStyleOperation, DiffOperationType
-        
-        added_ops = []
-        changed_ops = []
-        removed_ops = []
-        
-        # Convert additions
-        for addition in diff_data.get("additions", []):
-            added_ops.append(DiffStyleOperation(
-                operation_type=DiffOperationType.ADDED,
-                content=addition.get("content", ""),
-                section=addition.get("section"),
-                reasoning=addition.get("reasoning", "Legacy addition"),
-                confidence=0.9
-            ))
-        
-        # Convert modifications
-        for modification in diff_data.get("modifications", []):
-            changed_ops.append(DiffStyleOperation(
-                operation_type=DiffOperationType.CHANGED,
-                content=modification.get("new_content", ""),
-                old_content=modification.get("old_content", ""),
-                section=modification.get("section"),
-                reasoning=modification.get("reasoning", "Legacy modification"),
-                confidence=0.9
-            ))
-        
-        # Convert deletions
-        for deletion in diff_data.get("deletions", []):
-            removed_ops.append(DiffStyleOperation(
-                operation_type=DiffOperationType.REMOVED,
-                content=deletion.get("content", ""),
-                old_content=deletion.get("content", ""),
-                section=deletion.get("section"),
-                reasoning=deletion.get("reasoning", "Legacy deletion"),
-                confidence=0.9
-            ))
-        
-        return StructuredDiff(
-            added=added_ops,
-            changed=changed_ops,
-            removed=removed_ops,
-            reasoning=diff_data.get("reasoning", "Converted from legacy format")
-        )

@@ -25,60 +25,20 @@ class ChunkStrategy(str, Enum):
     SLUMBER = "slumber"
 
 
-class DiffStyleOperation(BaseModel):
-    """A single diff operation with precise location information."""
-    
-    operation_type: DiffOperationType = Field(description="Type of diff operation")
-    section: Optional[str] = Field(default=None, description="Section or heading where change occurs")
-    content: str = Field(description="The content being added, changed, or removed")
-    old_content: Optional[str] = Field(default=None, description="Original content for changes/removals")
-    line_start: Optional[int] = Field(default=None, description="Starting line number (1-based)")
-    line_end: Optional[int] = Field(default=None, description="Ending line number (1-based)")
-    char_start: Optional[int] = Field(default=None, description="Starting character position")
-    char_end: Optional[int] = Field(default=None, description="Ending character position")
-    reasoning: str = Field(description="Explanation for this operation")
-    confidence: float = Field(default=1.0, ge=0.0, le=1.0, description="Confidence in this operation")
 
 
-class ChunkMetadata(BaseModel):
-    """Metadata for a content chunk."""
-    
-    chunk_id: str = Field(description="Unique identifier for this chunk")
-    chunk_index: int = Field(description="Index of chunk in document")
-    start_char: int = Field(description="Starting character position in original document")
-    end_char: int = Field(description="Ending character position in original document")
-    section_title: Optional[str] = Field(default=None, description="Section title if applicable")
-    token_count: Optional[int] = Field(default=None, description="Number of tokens in chunk")
-    embedding: Optional[List[float]] = Field(default=None, description="Embedding vector if available")
+class DiffOperation(BaseModel):
+    """A single diff operation with search/replace format."""
+    reasoning: str = Field(description="Reason for this specific operation")
+    search: str = Field(description="Exact content to find (or insertion point for additions)")
+    replace: str = Field(description="Content to replace with (empty string for removals)")
 
 
-class PatchableChunk(BaseModel):
-    """A chunk of content that can be patched with diff operations."""
-    
-    content: str = Field(description="The chunk content")
-    metadata: ChunkMetadata = Field(description="Chunk metadata")
-    operations: List[DiffStyleOperation] = Field(default_factory=list, description="Operations to apply to this chunk")
-
-
-class StructuredDiff(BaseModel):
-    """Complete diff structure with operations organized by type."""
-    
-    added: List[DiffStyleOperation] = Field(default_factory=list, description="Content additions")
-    changed: List[DiffStyleOperation] = Field(default_factory=list, description="Content modifications")  
-    removed: List[DiffStyleOperation] = Field(default_factory=list, description="Content deletions")
+class SimpleDiff(BaseModel):
+    """Simplified diff format using a single list of operations."""
     reasoning: str = Field(description="Overall reasoning for all changes")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
+    operations: List[DiffOperation] = Field(default_factory=list, description="List of diff operations to apply")
 
-
-class ChunkBasedDiff(BaseModel):
-    """Diff operations organized by chunks for large documents."""
-    
-    chunks: List[PatchableChunk] = Field(description="Chunks with their associated operations")
-    global_operations: List[DiffStyleOperation] = Field(default_factory=list, description="Operations affecting multiple chunks")
-    reasoning: str = Field(description="Overall reasoning for changes")
-    chunk_strategy: ChunkStrategy = Field(description="Strategy used for chunking")
-    total_chunks: int = Field(description="Total number of chunks")
-    original_length: int = Field(description="Original document length in characters")
 
 
 class DiffConfig(BaseModel):
@@ -97,8 +57,8 @@ class PatchResult(BaseModel):
     """Result of applying patches to content."""
     
     content: str = Field(description="The patched content")
-    applied_operations: List[DiffStyleOperation] = Field(description="Operations that were successfully applied")
-    skipped_operations: List[DiffStyleOperation] = Field(default_factory=list, description="Operations that were skipped")
+    applied_changes: List[str] = Field(description="Changes that were successfully applied")
+    skipped_changes: List[str] = Field(default_factory=list, description="Changes that were skipped")
     errors: List[str] = Field(default_factory=list, description="Any errors encountered")
     stats: Dict[str, int] = Field(description="Statistics about the patch operation")
 

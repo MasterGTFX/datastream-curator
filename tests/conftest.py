@@ -121,8 +121,8 @@ def test_config():
     return CurationConfig(
         llm=LLMConfig(
             provider="openrouter",
-            api_key="test-api-key",
-            model="anthropic/claude-3-sonnet",
+            api_key=os.getenv("OPENROUTER_TEST_API_KEY", "test-api-key"),
+            model="google/gemini-2.5-flash-preview-05-20",
             temperature=0.1,
             max_tokens=4096,
             timeout=30
@@ -198,6 +198,7 @@ def existing_kb_file(temp_dir, sample_markdown_content):
     """Create an existing knowledge base file for testing."""
     kb_file = temp_dir / "existing_kb.md"
     kb_file.write_text(sample_markdown_content)
+    print("Original KB content:", sample_markdown_content)
     return str(kb_file)
 
 

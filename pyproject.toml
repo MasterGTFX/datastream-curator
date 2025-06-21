@@ -50,6 +50,9 @@ Homepage = "https://github.com/your-org/datastream-curator"
 Repository = "https://github.com/your-org/datastream-curator"
 Documentation = "https://datastream-curator.readthedocs.io/"
 
+[project.scripts]
+datastream-curator = "datastream_curator.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

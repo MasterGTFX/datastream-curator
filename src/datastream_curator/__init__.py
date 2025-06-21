@@ -10,10 +10,8 @@ from .core import DataStreamCurator
 from .llm import DiffRequest, LLMClient, LLMResponse
 from .diff import DiffEngine
 from .models import (
-    DiffStyleOperation,
-    DiffOperationType,
-    StructuredDiff,
-    ChunkBasedDiff,
+    SimpleDiff,
+    DiffOperation,
     DiffConfig,
     ChunkStrategy,
     PatchResult
@@ -43,10 +41,8 @@ __all__ = [
     
     # Diff engine
     "DiffEngine",
-    "DiffStyleOperation",
-    "DiffOperationType",
-    "StructuredDiff",
-    "ChunkBasedDiff",
+    "SimpleDiff",
+    "DiffOperation",
     "ChunkStrategy",
     "PatchResult",
 ]

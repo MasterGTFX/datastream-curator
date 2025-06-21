@@ -1,4 +1,4 @@
-"""Integration tests for enhanced diff system."""
+"""Integration tests for diff system."""
 
 import json
 from pathlib import Path
@@ -10,12 +10,12 @@ from datastream_curator import DataStreamCurator, CurationConfig, LLMConfig
 from datastream_curator.models import StructuredDiff, DiffStyleOperation, DiffOperationType
 
 
-class TestEnhancedIntegration:
-    """Test enhanced diff system integration."""
+class TestDiffIntegration:
+    """Test diff system integration."""
     
     @pytest.fixture
-    def enhanced_config(self):
-        """Create configuration for enhanced diff testing."""
+    def test_config(self):
+        """Create configuration for diff testing."""
         return CurationConfig(
             llm=LLMConfig(
                 api_key="test-key",
@@ -31,14 +31,9 @@ class TestEnhancedIntegration:
         )
     
     @pytest.fixture
-    def enhanced_curator(self, enhanced_config):
-        """Create curator with enhanced diff enabled."""
-        return DataStreamCurator(enhanced_config, use_enhanced_diff=True)
-    
-    @pytest.fixture
-    def legacy_curator(self, enhanced_config):
-        """Create curator with enhanced diff disabled."""
-        return DataStreamCurator(enhanced_config, use_enhanced_diff=False)
+    def curator(self, test_config):
+        """Create curator with diff enabled."""
+        return DataStreamCurator(test_config)
     
     @pytest.fixture
     def structured_diff_response(self):
@@ -47,9 +42,9 @@ class TestEnhancedIntegration:
             added=[
                 DiffStyleOperation(
                     operation_type=DiffOperationType.ADDED,
-                    content="## New Features\n\n### Enhanced Diff Engine\nSupports precise diff operations with chonkie and diff-match-patch.",
+                    content="## New Features\n\n### Advanced Diff Engine\nSupports precise diff operations with chonkie and diff-match-patch.",
                     section="New Features",
-                    reasoning="Adding information about new enhanced diff capabilities",
+                    reasoning="Adding information about new diff capabilities",
                     confidence=0.95
                 )
             ],
@@ -74,7 +69,7 @@ class TestEnhancedIntegration:
             "additions": [
                 {
                     "section": "New Features",
-                    "content": "## New Features\n\n### Enhanced Diff Engine\nSupports precise diff operations.",
+                    "content": "## New Features\n\n### Advanced Diff Engine\nSupports precise diff operations.",
                     "reasoning": "Adding new features section"
                 }
             ],
@@ -91,8 +86,8 @@ class TestEnhancedIntegration:
         }
     
     @pytest.mark.asyncio
-    async def test_enhanced_diff_workflow(self, enhanced_curator, structured_diff_response, temp_dir):
-        """Test complete workflow with enhanced diff engine."""
+    async def test_diff_workflow(self, curator, structured_diff_response, temp_dir):
+        """Test complete workflow with diff engine."""
         # Create input data
         input_data = {
             "updates": [
@@ -138,16 +133,16 @@ pip install datastream-curator
             with patch('datastream_curator.llm.instructor.from_openai') as mock_instructor_init:
                 mock_instructor_init.return_value = mock_instructor
                 
-                result = await enhanced_curator.process(
+                result = await curator.process(
                     input_data=input_data,
                     existing_kb_path=str(existing_kb),
                     output_path=str(output_path),
-                    instruction="Integrate new enhanced diff capabilities"
+                    instruction="Integrate new diff capabilities"
                 )
         
-        # Verify enhanced diff was used
-        assert enhanced_curator.enhanced_diff_engine is not None
-        assert enhanced_curator.use_enhanced_diff is True
+        # Verify diff was used
+        assert curator.enhanced_diff_engine is not None
+        assert curator.use_enhanced_diff is True
         
         # Verify output file was created
         assert output_path.exists()
@@ -158,8 +153,8 @@ pip install datastream-curator
         assert "DataStream Curator" in result  # Original title preserved
     
     @pytest.mark.asyncio
-    async def test_legacy_diff_fallback(self, enhanced_curator, legacy_diff_response, temp_dir):
-        """Test fallback to legacy diff when enhanced diff fails."""
+    async def test_legacy_diff_fallback(self, curator, legacy_diff_response, temp_dir):
+        """Test fallback to legacy diff when diff fails."""
         input_data = {"test": "data"}
         existing_kb = temp_dir / "existing.md"
         existing_kb.write_text("# Test\n\nOriginal content.")
@@ -170,11 +165,11 @@ pip install datastream-curator
             mock_client.generate_diff.return_value = legacy_diff_response
             mock_client_class.return_value.__aenter__.return_value = mock_client
             
-            # Make enhanced diff fail by patching it to raise exception
-            with patch.object(enhanced_curator.enhanced_diff_engine, 'apply_structured_diff', 
+            # Make diff fail by patching it to raise exception
+            with patch.object(curator.enhanced_diff_engine, 'apply_structured_diff', 
                               side_effect=Exception("Enhanced diff error")):
                 
-                result = await enhanced_curator.process(
+                result = await curator.process(
                     input_data=input_data,
                     existing_kb_path=str(existing_kb),
                     output_path=str(output_path)
@@ -186,8 +181,8 @@ pip install datastream-curator
         assert len(result) > 0
     
     @pytest.mark.asyncio
-    async def test_legacy_vs_enhanced_comparison(self, enhanced_config, temp_dir):
-        """Compare legacy vs enhanced diff outputs."""
+    async def test_diff_processing(self, test_config, temp_dir):
+        """Test diff processing with structured data."""
         input_data = {
             "feature": "New testing capability",
             "description": "Comprehensive test coverage"
@@ -221,36 +216,28 @@ Basic documentation."""
             "reasoning": "Adding testing capabilities"
         }
         
-        # Test with enhanced diff
-        enhanced_curator = DataStreamCurator(enhanced_config, use_enhanced_diff=True)
-        legacy_curator = DataStreamCurator(enhanced_config, use_enhanced_diff=False)
+        # Test with diff engine
+        curator = DataStreamCurator(test_config)
         
         with patch('datastream_curator.llm.LLMClient') as mock_client_class:
             mock_client = AsyncMock()
             mock_client.generate_diff.return_value = structured_response
             mock_client_class.return_value.__aenter__.return_value = mock_client
             
-            enhanced_result = await enhanced_curator.process(
-                input_data=input_data,
-                existing_kb_path=str(existing_kb)
-            )
-            
-            legacy_result = await legacy_curator.process(
+            result = await curator.process(
                 input_data=input_data,
                 existing_kb_path=str(existing_kb)
             )
         
-        # Both should produce valid results
-        assert isinstance(enhanced_result, str)
-        assert isinstance(legacy_result, str)
-        assert len(enhanced_result) > 0
-        assert len(legacy_result) > 0
+        # Should produce valid result
+        assert isinstance(result, str)
+        assert len(result) > 0
         
-        # Enhanced version might have better precision
-        assert "Testing" in enhanced_result or "Testing" in legacy_result
+        # Should include new content
+        assert "Testing" in result
     
     @pytest.mark.asyncio
-    async def test_chunk_based_processing(self, enhanced_curator, temp_dir):
+    async def test_chunk_based_processing(self, curator, temp_dir):
         """Test processing with large documents using chunking."""
         # Create large document
         large_content = """# Large Document
@@ -291,7 +278,7 @@ Basic documentation."""
             mock_client.generate_diff.return_value = chunk_response
             mock_client_class.return_value.__aenter__.return_value = mock_client
             
-            result = await enhanced_curator.process(
+            result = await curator.process(
                 input_data=input_data,
                 existing_kb_path=str(existing_kb)
             )
@@ -300,11 +287,11 @@ Basic documentation."""
         assert "Section 4" in result
         assert len(result) > len(large_content)  # Should be larger with addition
         
-        # Verify enhanced diff engine handled the large document
-        assert enhanced_curator.enhanced_diff_engine is not None
+        # Verify diff engine handled the large document
+        assert curator.enhanced_diff_engine is not None
     
     @pytest.mark.asyncio
-    async def test_confidence_filtering_integration(self, enhanced_curator, temp_dir):
+    async def test_confidence_filtering_integration(self, curator, temp_dir):
         """Test that low-confidence operations are filtered out."""
         existing_kb = temp_dir / "test.md"
         existing_kb.write_text("# Test Document\n\nOriginal content.")
@@ -337,7 +324,7 @@ Basic documentation."""
             mock_client.generate_diff.return_value = mixed_confidence_response
             mock_client_class.return_value.__aenter__.return_value = mock_client
             
-            result = await enhanced_curator.process(
+            result = await curator.process(
                 input_data={"test": "data"},
                 existing_kb_path=str(existing_kb)
             )
@@ -348,38 +335,38 @@ Basic documentation."""
         # Low confidence operation behavior depends on implementation
         # (might be included with warning or filtered out)
     
-    def test_enhanced_curator_initialization_error_handling(self, enhanced_config):
-        """Test handling of initialization errors in enhanced diff."""
+    def test_curator_initialization_error_handling(self, test_config):
+        """Test handling of initialization errors in diff."""
         # Mock chonkie import error
         with patch('datastream_curator.enhanced_diff.TokenChunker', side_effect=ImportError("chonkie not available")):
-            curator = DataStreamCurator(enhanced_config, use_enhanced_diff=True)
+            curator = DataStreamCurator(test_config, use_enhanced_diff=True)
             
             # Should fallback gracefully
             assert curator.enhanced_diff_engine is None or not curator.use_enhanced_diff
     
-    def test_configuration_integration(self, enhanced_config):
-        """Test that enhanced diff configuration is properly integrated."""
-        curator = DataStreamCurator(enhanced_config, use_enhanced_diff=True)
+    def test_configuration_integration(self, test_config):
+        """Test that diff configuration is properly integrated."""
+        curator = DataStreamCurator(test_config, use_enhanced_diff=True)
         
         if curator.enhanced_diff_engine:
             engine_config = curator.enhanced_diff_engine.config
             
-            assert engine_config.chunk_size == enhanced_config.diff_chunk_size
-            assert engine_config.chunk_overlap == enhanced_config.diff_chunk_overlap
-            assert engine_config.use_semantic_chunking == enhanced_config.diff_use_semantic
-            assert engine_config.preserve_structure == enhanced_config.diff_preserve_structure
-            assert engine_config.min_operation_confidence == enhanced_config.diff_min_confidence
+            assert engine_config.chunk_size == test_config.diff_chunk_size
+            assert engine_config.chunk_overlap == test_config.diff_chunk_overlap
+            assert engine_config.use_semantic_chunking == test_config.diff_use_semantic
+            assert engine_config.preserve_structure == test_config.diff_preserve_structure
+            assert engine_config.min_operation_confidence == test_config.diff_min_confidence
     
     @pytest.mark.asyncio
-    async def test_instructor_integration(self, enhanced_curator):
+    async def test_instructor_integration(self, curator):
         """Test instructor integration for structured outputs."""
         # This test verifies that instructor is properly integrated
         # even if we can't test the actual API calls
         
-        assert hasattr(enhanced_curator, 'enhanced_diff_engine')
+        assert hasattr(curator, 'diff_engine')
         
-        if enhanced_curator.enhanced_diff_engine:
-            # Verify the enhanced engine has the expected capabilities
-            assert hasattr(enhanced_curator.enhanced_diff_engine, 'apply_structured_diff')
-            assert hasattr(enhanced_curator.enhanced_diff_engine, 'generate_precise_diff')
-            assert hasattr(enhanced_curator.enhanced_diff_engine, 'create_chunk_based_diff')
+        if curator.diff_engine:
+            # Verify the diff engine has the expected capabilities
+            assert hasattr(curator.diff_engine, 'apply_structured_diff')
+            assert hasattr(curator.diff_engine, 'generate_precise_diff')
+            assert hasattr(curator.diff_engine, 'create_chunk_based_diff')

@@ -7,9 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from .config import CurationConfig
-from .diff import DiffEngine
 from .llm import DiffRequest, LLMClient
-from .enhanced_diff import EnhancedDiffEngine
+from .diff import DiffEngine
 from .models import DiffConfig, ChunkStrategy, StructuredDiff
 
 logger = logging.getLogger(__name__)
@@ -18,33 +17,26 @@ logger = logging.getLogger(__name__)
 class DataStreamCurator:
     """Main class for incremental data curation and knowledge base management."""
     
-    def __init__(self, config: Optional[CurationConfig] = None, use_enhanced_diff: bool = True):
+    def __init__(self, config: Optional[CurationConfig] = None):
         """Initialize the curator with configuration."""
         self.config = config or CurationConfig.from_env()
-        self.use_enhanced_diff = use_enhanced_diff
         
-        # Initialize diff engines
-        self.diff_engine = DiffEngine()  # Legacy engine for backward compatibility
-        
-        if use_enhanced_diff:
-            try:
-                # Create enhanced diff config from curation config
-                diff_config = DiffConfig(
-                    chunk_strategy=ChunkStrategy(self.config.diff_chunk_strategy),
-                    chunk_size=self.config.diff_chunk_size,
-                    chunk_overlap=self.config.diff_chunk_overlap,
-                    use_semantic_chunking=self.config.diff_use_semantic,
-                    preserve_structure=self.config.diff_preserve_structure,
-                    min_operation_confidence=self.config.diff_min_confidence
-                )
-                self.enhanced_diff_engine = EnhancedDiffEngine(diff_config)
-                logger.info("Enhanced diff engine initialized")
-            except Exception as e:
-                logger.warning(f"Failed to initialize enhanced diff engine: {e}. Using legacy engine.")
-                self.enhanced_diff_engine = None
-                self.use_enhanced_diff = False
-        else:
-            self.enhanced_diff_engine = None
+        # Initialize enhanced diff engine
+        try:
+            # Create enhanced diff config from curation config
+            diff_config = DiffConfig(
+                chunk_strategy=ChunkStrategy(self.config.diff_chunk_strategy),
+                chunk_size=self.config.diff_chunk_size,
+                chunk_overlap=self.config.diff_chunk_overlap,
+                use_semantic_chunking=self.config.diff_use_semantic,
+                preserve_structure=self.config.diff_preserve_structure,
+                min_operation_confidence=self.config.diff_min_confidence
+            )
+            self.diff_engine = DiffEngine(diff_config)
+            logger.info("Diff engine initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize diff engine: {e}")
+            raise RuntimeError(f"Cannot initialize DataStreamCurator without diff engine: {e}")
         
         # Set up logging based on configuration
         logging.basicConfig(
@@ -101,34 +93,29 @@ class DataStreamCurator:
                 diff_data = await llm_client.generate_diff(diff_request)
             
             # Apply diff to existing content
-            logger.info("Applying diff to knowledge base")
+            logger.info("Applying diff to knowledge base using diff engine")
             
-            if self.enhanced_diff_engine and self.use_enhanced_diff:
-                try:
-                    # Try enhanced diff application
-                    logger.info("Using enhanced diff engine")
-                    
-                    # Check if we got a structured diff from instructor
-                    if isinstance(diff_data, dict) and 'added' in diff_data:
-                        # Convert to StructuredDiff if needed
-                        structured_diff = StructuredDiff(**diff_data)
-                        patch_result = self.enhanced_diff_engine.apply_structured_diff(existing_content, structured_diff)
-                        updated_content = patch_result.content
-                        
-                        # Log results
-                        if patch_result.errors:
-                            logger.warning(f"Enhanced diff had {len(patch_result.errors)} errors: {patch_result.errors}")
-                        logger.info(f"Enhanced diff applied {patch_result.stats['applied_count']} operations")
-                    else:
-                        # Fallback to legacy format processing
-                        updated_content = self.diff_engine.apply_diff(existing_content, diff_data)
-                        
-                except Exception as e:
-                    logger.warning(f"Enhanced diff failed: {e}. Falling back to legacy diff engine.")
-                    updated_content = self.diff_engine.apply_diff(existing_content, diff_data)
+            # Check if we got a structured diff from instructor
+            if isinstance(diff_data, dict) and 'added' in diff_data:
+                # Convert to StructuredDiff if needed
+                structured_diff = StructuredDiff(**diff_data)
+                patch_result = self.diff_engine.apply_structured_diff(existing_content, structured_diff)
+                updated_content = patch_result.content
+                
+                # Log results
+                if patch_result.errors:
+                    logger.warning(f"Diff operation had {len(patch_result.errors)} errors: {patch_result.errors}")
+                logger.info(f"Applied {patch_result.stats['applied_count']} diff operations successfully")
             else:
-                # Use legacy diff engine
-                updated_content = self.diff_engine.apply_diff(existing_content, diff_data)
+                # Legacy format - convert to structured format first
+                logger.warning("Received legacy diff format, converting to structured format")
+                try:
+                    structured_diff = self._convert_legacy_diff(diff_data)
+                    patch_result = self.diff_engine.apply_structured_diff(existing_content, structured_diff)
+                    updated_content = patch_result.content
+                except Exception as e:
+                    logger.error(f"Failed to convert legacy diff format: {e}")
+                    raise ValueError(f"Cannot process diff data: {e}")
             
             # Save updated content if output path specified
             if output_path:
@@ -137,9 +124,11 @@ class DataStreamCurator:
                 output_file.write_text(updated_content, encoding='utf-8')
                 logger.info(f"Saved updated knowledge base to {output_path}")
             
-            # Log statistics
-            stats = self.diff_engine.generate_stats(diff_data)
-            logger.info(f"Curation complete: {stats}")
+            # Log final statistics
+            if 'patch_result' in locals():
+                logger.info(f"Curation complete: {patch_result.stats}")
+            else:
+                logger.info("Curation complete")
             
             return updated_content
             
@@ -321,3 +310,50 @@ class DataStreamCurator:
         except Exception as e:
             logger.error(f"LLM connection test failed: {e}")
             return False
+    
+    def _convert_legacy_diff(self, diff_data: Dict[str, Any]) -> StructuredDiff:
+        """Convert legacy diff format to structured diff format."""
+        from .models import DiffStyleOperation, DiffOperationType
+        
+        added_ops = []
+        changed_ops = []
+        removed_ops = []
+        
+        # Convert additions
+        for addition in diff_data.get("additions", []):
+            added_ops.append(DiffStyleOperation(
+                operation_type=DiffOperationType.ADDED,
+                content=addition.get("content", ""),
+                section=addition.get("section"),
+                reasoning=addition.get("reasoning", "Legacy addition"),
+                confidence=0.9
+            ))
+        
+        # Convert modifications
+        for modification in diff_data.get("modifications", []):
+            changed_ops.append(DiffStyleOperation(
+                operation_type=DiffOperationType.CHANGED,
+                content=modification.get("new_content", ""),
+                old_content=modification.get("old_content", ""),
+                section=modification.get("section"),
+                reasoning=modification.get("reasoning", "Legacy modification"),
+                confidence=0.9
+            ))
+        
+        # Convert deletions
+        for deletion in diff_data.get("deletions", []):
+            removed_ops.append(DiffStyleOperation(
+                operation_type=DiffOperationType.REMOVED,
+                content=deletion.get("content", ""),
+                old_content=deletion.get("content", ""),
+                section=deletion.get("section"),
+                reasoning=deletion.get("reasoning", "Legacy deletion"),
+                confidence=0.9
+            ))
+        
+        return StructuredDiff(
+            added=added_ops,
+            changed=changed_ops,
+            removed=removed_ops,
+            reasoning=diff_data.get("reasoning", "Converted from legacy format")
+        )

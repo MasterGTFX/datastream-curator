@@ -1,428 +1,404 @@
-"""Tests for diff engine functionality."""
+"""Tests for enhanced diff engine functionality."""
 
 import pytest
+from unittest.mock import patch, MagicMock
 
-from datastream_curator.diff import DiffEngine, DiffOperation, DiffResult
+from datastream_curator.diff import DiffEngine
+from datastream_curator.models import (
+    DiffConfig,
+    ChunkStrategy,
+    DiffStyleOperation,
+    DiffOperationType,
+    StructuredDiff,
+    ChunkBasedDiff,
+    DocumentStructure
+)
 
 
 class TestDiffEngine:
     """Test DiffEngine class."""
     
-    def test_apply_diff_empty_content(self):
-        """Test applying diff to empty content."""
-        engine = DiffEngine()
-        
-        diff_data = {
-            "additions": [
-                {
-                    "section": "Introduction",
-                    "content": "# New Document\n\nThis is a new document.",
-                    "reasoning": "Creating initial content"
-                }
-            ],
-            "modifications": [],
-            "deletions": [],
-            "reasoning": "Initial document creation"
-        }
-        
-        result = engine.apply_diff("", diff_data)
-        
-        assert "# New Document" in result
-        assert "This is a new document." in result
+    @pytest.fixture
+    def diff_config(self):
+        """Create test diff configuration."""
+        return DiffConfig(
+            chunk_strategy=ChunkStrategy.RECURSIVE,
+            chunk_size=500,
+            chunk_overlap=50,
+            use_semantic_chunking=True,
+            preserve_structure=True,
+            min_operation_confidence=0.7
+        )
     
-    def test_apply_addition_to_existing_content(self, sample_markdown_content):
-        """Test adding new content to existing markdown."""
-        engine = DiffEngine()
-        
-        diff_data = {
-            "additions": [
-                {
-                    "section": "Features",
-                    "content": "### New Feature\nThis is a newly added feature.",
-                    "reasoning": "Added based on input data"
-                }
-            ],
-            "modifications": [],
-            "deletions": [],
-            "reasoning": "Added new feature"
-        }
-        
-        result = engine.apply_diff(sample_markdown_content, diff_data)
-        
-        # Should contain original content
-        assert "# DataStream Curator" in result
-        assert "## Features" in result
-        
-        # Should contain new content
-        assert "### New Feature" in result
-        assert "This is a newly added feature." in result
+    @pytest.fixture
+    def diff_engine(self, diff_config):
+        """Create diff engine."""
+        return DiffEngine(diff_config)
     
-    def test_apply_modification_exact_match(self, sample_markdown_content):
-        """Test modifying existing content with exact match."""
-        engine = DiffEngine()
-        
-        diff_data = {
-            "additions": [],
-            "modifications": [
-                {
-                    "section": "Installation",
-                    "old_content": "pip install datastream-curator",
-                    "new_content": "pip install datastream-curator[dev]",
-                    "reasoning": "Updated to include dev dependencies"
-                }
-            ],
-            "deletions": [],
-            "reasoning": "Updated installation command"
-        }
-        
-        result = engine.apply_diff(sample_markdown_content, diff_data)
-        
-        assert "pip install datastream-curator[dev]" in result
-        assert "pip install datastream-curator" not in result or "pip install datastream-curator[dev]" in result
-    
-    def test_apply_deletion_exact_match(self, sample_markdown_content):
-        """Test deleting content with exact match."""
-        engine = DiffEngine()
-        
-        diff_data = {
-            "additions": [],
-            "modifications": [],
-            "deletions": [
-                {
-                    "section": "Usage",
-                    "content": "```python\nfrom datastream_curator import DataStreamCurator\n\ncurator = DataStreamCurator()\nresult = await curator.process(input_data, output_path)\n```",
-                    "reasoning": "Removing outdated example"
-                }
-            ],
-            "reasoning": "Cleaned up outdated examples"
-        }
-        
-        result = engine.apply_diff(sample_markdown_content, diff_data)
-        
-        # The code block should be removed
-        assert "curator = DataStreamCurator()" not in result
-    
-    def test_apply_multiple_operations(self, sample_markdown_content):
-        """Test applying multiple diff operations."""
-        engine = DiffEngine()
-        
-        diff_data = {
-            "additions": [
-                {
-                    "section": "Features",
-                    "content": "### Batch Processing\nProcess multiple files in batch mode.",
-                    "reasoning": "Added new feature"
-                }
-            ],
-            "modifications": [
-                {
-                    "section": "Overview",
-                    "old_content": "AI-powered incremental data curation tool.",
-                    "new_content": "AI-powered incremental data curation and knowledge base management tool.",
-                    "reasoning": "Improved description"
-                }
-            ],
-            "deletions": [
-                {
-                    "section": "Installation",
-                    "content": "```bash\npip install datastream-curator\n```",
-                    "reasoning": "Updated installation section"
-                }
-            ],
-            "reasoning": "Multiple improvements"
-        }
-        
-        result = engine.apply_diff(sample_markdown_content, diff_data)
-        
-        # Check addition
-        assert "### Batch Processing" in result
-        
-        # Check modification
-        assert "knowledge base management tool" in result
-        
-        # Check deletion (bash block should be removed)
-        bash_blocks = result.count("```bash")
-        original_bash_blocks = sample_markdown_content.count("```bash")
-        assert bash_blocks < original_bash_blocks
-    
-    def test_apply_addition_new_section(self):
-        """Test adding content when section doesn't exist."""
-        engine = DiffEngine()
-        content = "# Document\n\n## Existing Section\nContent here."
-        
-        diff_data = {
-            "additions": [
-                {
-                    "section": "New Section",
-                    "content": "## New Section\nNew content here.",
-                    "reasoning": "Added new section"
-                }
-            ],
-            "modifications": [],
-            "deletions": [],
-            "reasoning": "Added new section"
-        }
-        
-        result = engine.apply_diff(content, diff_data)
-        
-        # Should append to end when section not found
-        assert result.endswith("## New Section\nNew content here.")
-    
-    def test_apply_addition_to_existing_section(self):
-        """Test adding content to existing section."""
-        engine = DiffEngine()
-        content = "# Document\n\n## Features\nExisting feature.\n\n## Other\nOther content."
-        
-        diff_data = {
-            "additions": [
-                {
-                    "section": "Features",
-                    "content": "### New Feature\nDescription of new feature.",
-                    "reasoning": "Added feature"
-                }
-            ],
-            "modifications": [],
-            "deletions": [],
-            "reasoning": "Enhanced features"
-        }
-        
-        result = engine.apply_diff(content, diff_data)
-        
-        # Should add after the Features header
-        assert "## Features" in result
-        assert "### New Feature" in result
-        assert result.index("### New Feature") > result.index("## Features")
-        assert result.index("### New Feature") < result.index("## Other")
-    
-    def test_apply_modification_fuzzy_match(self):
-        """Test modification with fuzzy matching."""
-        engine = DiffEngine()
-        content = "# Document\n\nThis is a long paragraph with some specific content that we want to modify."
-        
-        diff_data = {
-            "additions": [],
-            "modifications": [
-                {
-                    "section": "Document",
-                    "old_content": "This is a long paragraph",
-                    "new_content": "This is an updated paragraph with new information",
-                    "reasoning": "Updated content"
-                }
-            ],
-            "deletions": [],
-            "reasoning": "Content update"
-        }
-        
-        result = engine.apply_diff(content, diff_data)
-        
-        assert "This is an updated paragraph with new information" in result
-    
-    def test_apply_deletion_fuzzy_match(self):
-        """Test deletion with partial content matching."""
-        engine = DiffEngine()
-        content = "# Document\n\nLine 1\nLine 2 with specific content\nLine 3"
-        
-        diff_data = {
-            "additions": [],
-            "modifications": [],
-            "deletions": [
-                {
-                    "section": "Document",
-                    "content": "Line 2 with specific content",
-                    "reasoning": "Removing specific line"
-                }
-            ],
-            "reasoning": "Cleanup"
-        }
-        
-        result = engine.apply_diff(content, diff_data)
-        
-        assert "Line 2 with specific content" not in result
-        assert "Line 1" in result
-        assert "Line 3" in result
-    
-    def test_apply_diff_no_operations(self, sample_markdown_content):
-        """Test applying diff with no operations."""
-        engine = DiffEngine()
-        
-        diff_data = {
-            "additions": [],
-            "modifications": [],
-            "deletions": [],
-            "reasoning": "No changes needed"
-        }
-        
-        result = engine.apply_diff(sample_markdown_content, diff_data)
-        
-        # Content should remain unchanged
-        assert result == sample_markdown_content
-    
-    def test_apply_diff_empty_operations(self, sample_markdown_content):
-        """Test applying diff with empty operation content."""
-        engine = DiffEngine()
-        
-        diff_data = {
-            "additions": [
-                {
-                    "section": "Test",
-                    "content": "",  # Empty content
-                    "reasoning": "Empty addition"
-                }
-            ],
-            "modifications": [
-                {
-                    "section": "Test",
-                    "old_content": "",  # Empty old content
-                    "new_content": "New content",
-                    "reasoning": "Empty modification"
-                }
-            ],
-            "deletions": [
-                {
-                    "section": "Test",
-                    "content": "",  # Empty content
-                    "reasoning": "Empty deletion"
-                }
-            ],
-            "reasoning": "Test empty operations"
-        }
-        
-        result = engine.apply_diff(sample_markdown_content, diff_data)
-        
-        # Content should remain unchanged due to empty operations
-        assert result == sample_markdown_content
-    
-    def test_generate_stats_basic(self):
-        """Test generating statistics for diff data."""
-        engine = DiffEngine()
-        
-        diff_data = {
-            "additions": [{"content": "add1"}, {"content": "add2"}],
-            "modifications": [{"old_content": "old", "new_content": "new"}],
-            "deletions": [{"content": "delete"}],
-            "reasoning": "Test"
-        }
-        
-        stats = engine.generate_stats(diff_data)
-        
-        assert stats["additions"] == 2
-        assert stats["modifications"] == 1
-        assert stats["deletions"] == 1
-        assert stats["total_operations"] == 4
-    
-    def test_generate_stats_empty(self):
-        """Test generating statistics for empty diff data."""
-        engine = DiffEngine()
-        
-        diff_data = {
-            "additions": [],
-            "modifications": [],
-            "deletions": [],
-            "reasoning": "No changes"
-        }
-        
-        stats = engine.generate_stats(diff_data)
-        
-        assert stats["additions"] == 0
-        assert stats["modifications"] == 0
-        assert stats["deletions"] == 0
-        assert stats["total_operations"] == 0
-    
-    def test_generate_stats_missing_keys(self):
-        """Test generating statistics with missing keys."""
-        engine = DiffEngine()
-        
-        diff_data = {
-            "reasoning": "Partial data"
-            # Missing additions, modifications, deletions
-        }
-        
-        stats = engine.generate_stats(diff_data)
-        
-        assert stats["additions"] == 0
-        assert stats["modifications"] == 0
-        assert stats["deletions"] == 0
-        assert stats["total_operations"] == 0
-    
-    def test_smart_replace(self):
-        """Test smart replace functionality."""
-        engine = DiffEngine()
-        content = "Line 1\nLine 2 with target content\nLine 3"
-        
-        result = engine._smart_replace(content, "target content", "replacement content")
-        
-        assert "replacement content" in result
-        assert "target content" not in result
-    
-    def test_replace_section(self):
-        """Test replacing a section of content."""
-        engine = DiffEngine()
-        content = "Line 1\nTarget line\nLine after target\nAnother line\nFinal line"
-        
-        result = engine._replace_section(content, "Target line", "New content\nReplacement lines", 2)
-        
-        assert "New content" in result
-        assert "Replacement lines" in result
-        assert "Target line" not in result
-        assert "Line after target" not in result  # Should be removed as part of section
-        assert "Another line" in result  # Should remain
+    @pytest.fixture
+    def sample_markdown(self):
+        """Sample markdown content for testing."""
+        return """# Test Document
 
+## Introduction
 
-class TestDiffOperation:
-    """Test DiffOperation model."""
+This is a test document for evaluating the enhanced diff engine.
+
+## Features
+
+### Feature 1
+Description of feature 1.
+
+### Feature 2
+Description of feature 2.
+
+## Conclusion
+
+This concludes the test document.
+"""
     
-    def test_diff_operation_creation(self):
-        """Test creating a diff operation."""
-        operation = DiffOperation(
-            operation="add",
-            section="Features",
-            content="New feature content",
-            reasoning="Added based on input"
+    @pytest.fixture
+    def modified_markdown(self):
+        """Modified version of sample markdown."""
+        return """# Test Document
+
+## Introduction
+
+This is a test document for evaluating the enhanced diff engine with improvements.
+
+## Features
+
+### Feature 1
+Enhanced description of feature 1 with new capabilities.
+
+### Feature 2
+Description of feature 2.
+
+### Feature 3
+Description of new feature 3.
+
+## Performance
+
+New section about performance improvements.
+
+## Conclusion
+
+This concludes the updated test document.
+"""
+    
+    def test_diff_engine_initialization(self, diff_engine, diff_config):
+        """Test diff engine initialization."""
+        assert diff_engine.config == diff_config
+        assert diff_engine.dmp is not None
+        assert diff_engine.chunkers is not None
+    
+    def test_analyze_document_structure(self, diff_engine, sample_markdown):
+        """Test document structure analysis."""
+        structure = diff_engine.analyze_document_structure(sample_markdown)
+        
+        assert isinstance(structure, DocumentStructure)
+        assert len(structure.headings) > 0
+        assert len(structure.sections) > 0
+        assert len(structure.chunks) > 0
+        
+        # Check headings
+        heading_titles = [h['title'] for h in structure.headings]
+        assert 'Test Document' in heading_titles
+        assert 'Introduction' in heading_titles
+        assert 'Features' in heading_titles
+        
+        # Check sections
+        section_titles = [s['title'] for s in structure.sections]
+        assert 'Test Document' in section_titles
+        assert 'Introduction' in section_titles
+    
+    @patch('chonkie.RecursiveChunker')
+    def test_chunking_with_mocked_chunker(self, mock_chunker_class, diff_engine):
+        """Test chunking with mocked chunker."""
+        # Setup mock
+        mock_chunker = MagicMock()
+        mock_chunker_class.return_value = mock_chunker
+        
+        # Mock chunk objects
+        mock_chunk1 = MagicMock()
+        mock_chunk1.text = "First chunk content"
+        mock_chunk2 = MagicMock()
+        mock_chunk2.text = "Second chunk content"
+        
+        mock_chunker.chunk.return_value = [mock_chunk1, mock_chunk2]
+        
+        content = "First chunk content and more text. Second chunk content and even more."
+        
+        # Re-initialize engine to use mocked chunker
+        diff_engine._setup_chunkers()
+        chunks = diff_engine._create_content_chunks(content)
+        
+        assert len(chunks) == 2
+        assert chunks[0].content == "First chunk content"
+        assert chunks[1].content == "Second chunk content"
+    
+    def test_generate_precise_diff(self, diff_engine):
+        """Test precise diff generation using diff-match-patch."""
+        old_content = "Hello world\nThis is line 2\nThis is line 3"
+        new_content = "Hello universe\nThis is line 2\nThis is new line 3\nThis is line 4"
+        
+        operations = diff_engine.generate_precise_diff(old_content, new_content)
+        
+        assert len(operations) > 0
+        
+        # Check operation types
+        operation_types = [op.operation_type for op in operations]
+        assert DiffOperationType.REMOVED in operation_types or DiffOperationType.ADDED in operation_types
+        
+        # Check that operations have position information
+        for op in operations:
+            assert op.char_start is not None
+            assert op.char_end is not None
+            assert op.confidence > 0
+    
+    def test_apply_structured_diff_additions(self, diff_engine):
+        """Test applying structured diff with additions."""
+        original_content = "# Original Document\n\nSome content."
+        
+        addition = DiffStyleOperation(
+            operation_type=DiffOperationType.ADDED,
+            content="## New Section\n\nNew content here.",
+            section="New Section",
+            reasoning="Adding new section",
+            confidence=0.9
         )
         
-        assert operation.operation == "add"
-        assert operation.section == "Features"
-        assert operation.content == "New feature content"
-        assert operation.old_content == ""
-        assert operation.reasoning == "Added based on input"
-    
-    def test_diff_operation_with_old_content(self):
-        """Test creating a modification operation."""
-        operation = DiffOperation(
-            operation="modify",
-            section="Usage",
-            content="Updated usage instructions",
-            old_content="Old usage instructions",
-            reasoning="Updated for clarity"
+        structured_diff = StructuredDiff(
+            added=[addition],
+            changed=[],
+            removed=[],
+            reasoning="Adding new content"
         )
         
-        assert operation.operation == "modify"
-        assert operation.old_content == "Old usage instructions"
-
-
-class TestDiffResult:
-    """Test DiffResult model."""
+        result = diff_engine.apply_structured_diff(original_content, structured_diff)
+        
+        assert result.stats['applied_count'] == 1
+        assert result.stats['skipped_count'] == 0
+        assert "New Section" in result.content
+        assert "New content here" in result.content
     
-    def test_diff_result_creation(self):
-        """Test creating a diff result."""
+    def test_apply_structured_diff_modifications(self, diff_engine):
+        """Test applying structured diff with modifications."""
+        original_content = "# Document\n\nOld content that needs updating."
+        
+        modification = DiffStyleOperation(
+            operation_type=DiffOperationType.CHANGED,
+            content="New content that has been updated.",
+            old_content="Old content that needs updating.",
+            reasoning="Updating content",
+            confidence=0.95
+        )
+        
+        structured_diff = StructuredDiff(
+            added=[],
+            changed=[modification],
+            removed=[],
+            reasoning="Updating existing content"
+        )
+        
+        result = diff_engine.apply_structured_diff(original_content, structured_diff)
+        
+        assert result.stats['applied_count'] == 1
+        assert "New content that has been updated" in result.content
+        assert "Old content that needs updating" not in result.content
+    
+    def test_apply_structured_diff_removals(self, diff_engine):
+        """Test applying structured diff with removals."""
+        original_content = """# Document
+
+## Section 1
+Content to keep.
+
+## Section 2
+Content to remove.
+
+## Section 3
+More content to keep."""
+        
+        removal = DiffStyleOperation(
+            operation_type=DiffOperationType.REMOVED,
+            content="## Section 2\nContent to remove.",
+            reasoning="Removing outdated section",
+            confidence=0.9
+        )
+        
+        structured_diff = StructuredDiff(
+            added=[],
+            changed=[],
+            removed=[removal],
+            reasoning="Removing outdated content"
+        )
+        
+        result = diff_engine.apply_structured_diff(original_content, structured_diff)
+        
+        assert result.stats['applied_count'] == 1
+        assert "Section 2" not in result.content
+        assert "Content to remove" not in result.content
+        assert "Section 1" in result.content
+        assert "Section 3" in result.content
+    
+    def test_apply_structured_diff_error_handling(self, diff_engine):
+        """Test error handling in structured diff application."""
+        original_content = "# Document\n\nSome content."
+        
+        # Create an operation with invalid position information
+        invalid_operation = DiffStyleOperation(
+            operation_type=DiffOperationType.CHANGED,
+            content="New content",
+            char_start=1000,  # Invalid position
+            char_end=2000,
+            reasoning="Invalid operation",
+            confidence=0.5
+        )
+        
+        structured_diff = StructuredDiff(
+            added=[],
+            changed=[invalid_operation],
+            removed=[],
+            reasoning="Testing error handling"
+        )
+        
+        result = diff_engine.apply_structured_diff(original_content, structured_diff)
+        
+        assert result.stats['error_count'] > 0
+        assert result.stats['skipped_count'] > 0
+        assert len(result.errors) > 0
+    
+    def test_create_chunk_based_diff(self, diff_engine, sample_markdown, modified_markdown):
+        """Test creating chunk-based diff for large documents."""
+        chunk_diff = diff_engine.create_chunk_based_diff(sample_markdown, modified_markdown)
+        
+        assert isinstance(chunk_diff, ChunkBasedDiff)
+        assert chunk_diff.total_chunks > 0
+        assert chunk_diff.chunk_strategy == ChunkStrategy.RECURSIVE
+        assert chunk_diff.original_length == len(sample_markdown)
+        
+        # Check that chunks have operations
+        has_operations = any(len(chunk.operations) > 0 for chunk in chunk_diff.chunks)
+        assert has_operations
+    
+    def test_merge_operations(self, diff_engine):
+        """Test merging adjacent operations."""
+        op1 = DiffStyleOperation(
+            operation_type=DiffOperationType.ADDED,
+            content="First addition",
+            char_start=10,
+            char_end=25,
+            reasoning="First operation",
+            confidence=0.9
+        )
+        
+        op2 = DiffStyleOperation(
+            operation_type=DiffOperationType.ADDED,
+            content=" Second addition",
+            char_start=25,
+            char_end=41,
+            reasoning="Second operation",
+            confidence=0.8
+        )
+        
+        operations = [op1, op2]
+        merged = diff_engine.merge_operations(operations)
+        
+        # Should merge adjacent operations of same type
+        assert len(merged) == 1
+        assert merged[0].content == "First addition Second addition"
+        assert merged[0].char_start == 10
+        assert merged[0].char_end == 41
+        assert merged[0].confidence == 0.8  # Minimum confidence
+    
+    def test_fallback_chunking(self, diff_engine):
+        """Test fallback line-based chunking when regular chunking fails."""
+        # Mock chunker to raise exception
+        with patch.object(diff_engine, 'chunkers', {}):
+            content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5"
+            chunks = diff_engine._create_content_chunks(content)
+            
+            assert len(chunks) > 0
+            assert all(chunk.metadata['strategy'] == 'fallback' for chunk in chunks)
+    
+    def test_section_based_addition(self, diff_engine):
+        """Test adding content to specific sections."""
+        content = """# Main Title
+
+## Section A
+Existing content A.
+
+## Section B
+Existing content B."""
+        
+        new_content = "Additional content for section A."
+        result = diff_engine._add_to_section(content, "Section A", new_content)
+        
+        assert "Additional content for section A" in result
+        # Should be inserted after Section A heading
+        lines = result.split('\n')
+        section_a_index = next(i for i, line in enumerate(lines) if "Section A" in line)
+        assert "Additional content for section A" in lines[section_a_index + 2]
+    
+    def test_section_not_found_addition(self, diff_engine):
+        """Test adding content when section is not found."""
+        content = "# Main Title\n\nExisting content."
+        new_content = "New section content."
+        
+        result = diff_engine._add_to_section(content, "New Section", new_content)
+        
+        # Should append new section at end
+        assert "# New Section" in result
+        assert "New section content" in result
+    
+    @pytest.mark.parametrize("chunk_strategy", [
+        ChunkStrategy.TOKEN,
+        ChunkStrategy.SENTENCE,
+        ChunkStrategy.RECURSIVE,
+    ])
+    def test_different_chunk_strategies(self, chunk_strategy):
+        """Test different chunking strategies."""
+        config = DiffConfig(chunk_strategy=chunk_strategy)
+        engine = EnhancedDiffEngine(config)
+        
+        assert engine.config.chunk_strategy == chunk_strategy
+        assert chunk_strategy in engine.chunkers or chunk_strategy == ChunkStrategy.SEMANTIC
+    
+    def test_confidence_filtering(self, diff_engine):
+        """Test filtering operations by confidence level."""
         operations = [
-            DiffOperation(
-                operation="add",
-                section="Test",
-                content="Test content",
-                reasoning="Test"
+            DiffStyleOperation(
+                operation_type=DiffOperationType.ADDED,
+                content="High confidence",
+                confidence=0.9,
+                reasoning="High confidence operation"
+            ),
+            DiffStyleOperation(
+                operation_type=DiffOperationType.ADDED,
+                content="Low confidence",
+                confidence=0.5,
+                reasoning="Low confidence operation"
             )
         ]
         
-        stats = {"additions": 1, "modifications": 0, "deletions": 0, "total_operations": 1}
+        # Filter by minimum confidence
+        min_confidence = diff_engine.config.min_operation_confidence
+        filtered = [op for op in operations if op.confidence >= min_confidence]
         
-        result = DiffResult(
-            operations=operations,
-            reasoning="Test reasoning",
-            stats=stats
-        )
+        assert len(filtered) == 1
+        assert filtered[0].content == "High confidence"
+    
+    def test_document_structure_metadata(self, diff_engine, sample_markdown):
+        """Test document structure metadata extraction."""
+        structure = diff_engine.analyze_document_structure(sample_markdown)
         
-        assert len(result.operations) == 1
-        assert result.operations[0].operation == "add"
-        assert result.reasoning == "Test reasoning"
-        assert result.stats["total_operations"] == 1
+        metadata = structure.metadata
+        assert 'total_chars' in metadata
+        assert 'total_lines' in metadata
+        assert 'heading_count' in metadata
+        assert 'chunk_count' in metadata
+        
+        assert metadata['total_chars'] == len(sample_markdown)
+        assert metadata['heading_count'] > 0
+        assert metadata['chunk_count'] > 0

@@ -7,9 +7,8 @@ using Large Language Models (LLMs) with structured diff generation and applicati
 
 from .config import CurationConfig, LLMConfig, LoggingConfig, OutputConfig, ProcessingConfig
 from .core import DataStreamCurator
-from .diff import DiffEngine, DiffOperation, DiffResult
 from .llm import DiffRequest, LLMClient, LLMResponse
-from .enhanced_diff import EnhancedDiffEngine
+from .diff import DiffEngine
 from .models import (
     DiffStyleOperation,
     DiffOperationType,
@@ -42,13 +41,8 @@ __all__ = [
     "DiffRequest",
     "LLMResponse",
     
-    # Legacy diff engine
+    # Diff engine
     "DiffEngine",
-    "DiffOperation",
-    "DiffResult",
-    
-    # Enhanced diff engine
-    "EnhancedDiffEngine",
     "DiffStyleOperation",
     "DiffOperationType",
     "StructuredDiff",
@@ -63,13 +57,12 @@ def get_version() -> str:
     return __version__
 
 
-def create_curator(config_path: str = None, use_enhanced_diff: bool = True, **kwargs) -> DataStreamCurator:
+def create_curator(config_path: str = None, **kwargs) -> DataStreamCurator:
     """
     Create a DataStreamCurator instance with optional configuration.
     
     Args:
         config_path: Path to configuration YAML file
-        use_enhanced_diff: Whether to use the enhanced diff engine
         **kwargs: Additional configuration parameters
         
     Returns:
@@ -100,4 +93,4 @@ def create_curator(config_path: str = None, use_enhanced_diff: bool = True, **kw
         
         config = CurationConfig(**config_dict)
     
-    return DataStreamCurator(config, use_enhanced_diff=use_enhanced_diff)
+    return DataStreamCurator(config)
